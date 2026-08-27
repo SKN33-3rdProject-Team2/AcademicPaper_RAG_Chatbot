@@ -1,0 +1,3 @@
+# 팀 전체에서 동일하게 사용하는 Ollama 모델 및 서버 설정
+model: qwen2.5:3b
+host: http://localhost:11434
