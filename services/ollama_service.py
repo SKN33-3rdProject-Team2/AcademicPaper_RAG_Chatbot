@@ -3,30 +3,35 @@
 from __future__ import annotations
 
 import json
-import os
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 
-DEFAULT_OLLAMA_MODEL = "qwen2.5:3b"
+OLLAMA_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "ollama_config.yaml"
 
-def _load_project_env() -> None:
-    """외부 패키지 없이 프로젝트 루트의 .env 설정을 읽는다."""
-    env_path = Path(__file__).resolve().parent.parent / ".env"
-    if not env_path.is_file():
-        return
-    for line in env_path.read_text(encoding="utf-8").splitlines():
+
+def _load_ollama_config() -> dict[str, str]:
+    """팀 공통 Ollama YAML 설정에서 model과 host를 읽는다."""
+    if not OLLAMA_CONFIG_PATH.is_file():
+        raise RuntimeError(f"Ollama 설정 파일을 찾을 수 없습니다: {OLLAMA_CONFIG_PATH}")
+
+    config: dict[str, str] = {}
+    for line in OLLAMA_CONFIG_PATH.read_text(encoding="utf-8").splitlines():
         line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+        if not line or line.startswith("#") or ":" not in line:
             continue
-        key, value = line.split("=", maxsplit=1)
-        key = key.strip()
-        if key:
-            os.environ.setdefault(key, value.strip().strip('"').strip("'"))
+        key, value = line.split(":", maxsplit=1)
+        value = value.strip().strip('"').strip("'")
+        if key in {"model", "host"} and value:
+            config[key] = value
+
+    if "model" not in config or "host" not in config:
+        raise RuntimeError("ollama_config.yaml에는 model과 host 설정이 필요합니다.")
+    return config
 
 
-_load_project_env()
+OLLAMA_CONFIG = _load_ollama_config()
 
 
 class OllamaServiceError(RuntimeError):
@@ -35,9 +40,9 @@ class OllamaServiceError(RuntimeError):
 
 def generate(prompt: str, *, response_format: str | None = None, timeout: int = 25) -> str:
     """Ollama generate API를 호출하고 모델의 텍스트 응답만 반환한다."""
-    host = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+    host = OLLAMA_CONFIG["host"].rstrip("/")
     payload: dict[str, object] = {
-        "model": os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL),
+        "model": OLLAMA_CONFIG["model"],
         "prompt": prompt,
         "stream": False,
         "options": {"temperature": 0.2, "num_predict": 160},
