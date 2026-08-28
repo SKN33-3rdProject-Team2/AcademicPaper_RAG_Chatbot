@@ -120,6 +120,66 @@ class RefinementRuleTest(unittest.TestCase):
         self.assertIn("> **Figure 2: German to English results**", refined)
 
 
+class DegenerationGuardTest(unittest.TestCase):
+    """비전 판독이 망가졌는지 가려내는 검사. 표를 오탐하면 안 된다."""
+
+    LOCAL = "some local page text " * 30
+
+    def test_unk_run_is_rejected(self):
+        text = "Body text. " + "<unk>" * 20
+        self.assertIn("<unk>", PaperExtractor._degeneration_reason(text, self.LOCAL))
+
+    def test_empty_response_is_rejected(self):
+        self.assertTrue(PaperExtractor._degeneration_reason("   ", self.LOCAL))
+
+    def test_markdown_table_is_not_rejected(self):
+        """표 구분행 |:---:|:---:| 이 반복으로 오인되면 표가 통째로 버려진다."""
+        table = (
+            "| pruning | beam size | speed up | BLEU | TER | fan out | total | sent |\n"
+            "|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|\n"
+            + "".join(
+                f"| rp={i / 10} | 5 | {i}% | 27.3 | 54.6 | 4.5 | 122 | 25 |\n"
+                for i in range(1, 9)
+            )
+        )
+        self.assertEqual(PaperExtractor._degeneration_reason(table, self.LOCAL), "")
+
+    def test_repeated_sentence_outside_table_is_rejected(self):
+        text = "The decoder expands candidates. " * 12
+        self.assertTrue(PaperExtractor._degeneration_reason(text, self.LOCAL))
+
+    def test_wildly_inflated_output_is_rejected(self):
+        text = "unique words here " * 400
+        reason = PaperExtractor._degeneration_reason(text, self.LOCAL)
+        self.assertTrue(reason)
+
+    def test_normal_page_passes(self):
+        text = "## Introduction\n\nNeural machine translation reached parity with SMT."
+        self.assertEqual(PaperExtractor._degeneration_reason(text, self.LOCAL), "")
+
+
+class ContentPageCountTest(unittest.TestCase):
+    """표를 담을지 정하는 기준이 되는, 참고문헌을 뺀 본문 쪽 수."""
+
+    def test_references_heading_marks_the_boundary(self):
+        pages = ["body", "body", "References\n\n[1] Someone. 2017.", "[2] Another. 2018."]
+        self.assertEqual(PaperExtractor._content_page_count(pages), 2)
+
+    def test_bare_citation_list_marks_the_boundary(self):
+        """물리·수학 학술지는 References 제목 없이 [1] 부터 바로 나열한다."""
+        citations = "\n".join(f"[{i}] Author {i}, Journal {i} (2020)." for i in range(1, 9))
+        pages = ["body", "body", "body", citations]
+        self.assertEqual(PaperExtractor._content_page_count(pages), 3)
+
+    def test_paper_without_references_counts_every_page(self):
+        self.assertEqual(PaperExtractor._content_page_count(["a", "b", "c"]), 3)
+
+    def test_scattered_citations_do_not_trigger(self):
+        """본문 중간의 인용 한둘로 참고문헌 시작을 오판하면 안 된다."""
+        pages = ["text [1] and [2] here", "more text", "References", "[1] x"]
+        self.assertEqual(PaperExtractor._content_page_count(pages), 2)
+
+
 class StorageTest(unittest.TestCase):
     """경로를 주입할 수 있으므로 실제 데이터 없이 저장 동작을 확인한다."""
 

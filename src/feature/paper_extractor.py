@@ -107,6 +107,7 @@ DEFAULT_VISION_WORKERS = 8
 # 비전 판독이 반복 루프에 빠졌는지 가려내는 신호들. 호출이 성공해도 내용이 망가질 수 있다.
 UNK_RUN_PATTERN = re.compile(r"(?:<unk>\s*){4,}")
 REPEATED_RUN_PATTERN = re.compile(r"(.{2,40}?)\1{6,}", re.DOTALL)
+TABLE_ROW_PATTERN = re.compile(r"^[ \t]*\|.*$", re.MULTILINE)
 # 마크다운 문법이 붙어 로컬 추출보다 길어지는 건 정상이지만, 몇 배가 되면 반복이다.
 VISION_LENGTH_LIMIT = 3.0
 
@@ -459,7 +460,9 @@ class PaperExtractor:
             return "빈 응답"
         if UNK_RUN_PATTERN.search(text):
             return "<unk> 반복"
-        if REPEATED_RUN_PATTERN.search(text):
+        # 반복 검사에서는 표를 빼고 본다. 마크다운 표의 |:---:|:---:| 구분행과 규칙적인
+        # 칸 배열이 반복으로 오인돼, 표가 잘 나온 쪽이 오히려 버려진다.
+        if REPEATED_RUN_PATTERN.search(TABLE_ROW_PATTERN.sub("", text)):
             return "같은 조각 반복"
         local_length = len(local_text.strip())
         if local_length > 200 and len(text) > local_length * VISION_LENGTH_LIMIT:
