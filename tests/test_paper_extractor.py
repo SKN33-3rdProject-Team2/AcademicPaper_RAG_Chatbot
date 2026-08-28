@@ -193,17 +193,35 @@ class NumberingStyleTest(unittest.TestCase):
     def test_no_numbering(self):
         self.assertEqual(PaperExtractor._numbering_style(["", "", ""]), "")
 
-    def test_letter_c_is_a_subsection_in_a_roman_document(self):
-        """C 는 로마 숫자 100 이기도 해서, 예전에 'C. Tasks' 가 대단원으로 승격됐다."""
-        self.assertFalse(PaperExtractor._is_major_section("C", "Tasks", "roman"))
-        self.assertFalse(PaperExtractor._is_major_section("A", "Environment", "roman"))
-        self.assertFalse(PaperExtractor._is_major_section("B", "Action Set", "roman"))
+    def test_letter_subsections_in_a_roman_document(self):
+        """A·B 는 로마 숫자가 아니고, C 는 순서에 맞지 않아 모두 소단원이다."""
+        self.assertFalse(PaperExtractor._is_major_section("A", "Environment", "roman", 3))
+        self.assertFalse(PaperExtractor._is_major_section("B", "Action Set", "roman", 3))
+        self.assertFalse(PaperExtractor._is_major_section("C", "Tasks", "roman", 3))
 
-    def test_roman_numerals_stay_major(self):
-        for number in ("I", "II", "III", "IV"):
+    def test_roman_numerals_stay_major_in_sequence(self):
+        """로마 체계에서는 번호가 순서대로 이어지는지로 판정한다."""
+        last = 0
+        for number in ("I", "II", "III", "IV", "V", "VI"):
             self.assertTrue(
-                PaperExtractor._is_major_section(number, "SOMETHING", "roman"), number
+                PaperExtractor._is_major_section(number, "SOMETHING", "roman", last), number
             )
+            last = PaperExtractor._roman_value(number)
+
+    def test_single_letter_v_is_major_when_it_continues_the_sequence(self):
+        """V 는 한 글자이지만 IV 다음에 오면 대단원이다 (V. RESULTS)."""
+        self.assertTrue(PaperExtractor._is_major_section("V", "RESULTS", "roman", 4))
+
+    def test_letter_c_is_rejected_even_though_it_is_roman_100(self):
+        """C 는 로마 숫자 100 이라 순서에 맞지 않아 걸러진다 (C. Tasks)."""
+        self.assertFalse(PaperExtractor._is_major_section("C", "Tasks", "roman", 3))
+
+    def test_roman_value(self):
+        cases = {"I": 1, "II": 2, "III": 3, "IV": 4, "V": 5, "VI": 6, "C": 100}
+        for number, value in cases.items():
+            self.assertEqual(PaperExtractor._roman_value(number), value, number)
+        for number in ("A", "B", "3", ""):
+            self.assertEqual(PaperExtractor._roman_value(number), 0, number)
 
     def test_letters_are_not_major_in_an_arabic_document(self):
         self.assertFalse(PaperExtractor._is_major_section("C", "Tasks", "arabic"))

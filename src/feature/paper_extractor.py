@@ -169,6 +169,20 @@ MAJOR_SECTION_TITLES = {
 # 대단원으로 잡되 저장에서는 빼는 절
 EXCLUDED_SECTION_TITLES = {"references", "bibliography"}
 
+# IEEE·Springer 양식은 초록 표제를 본문 첫 줄에 붙여 쓴다.
+#   "**_Abstract_**--Recent advances in Large Language Models ..."
+# 독립된 줄이 아니라 헤딩으로 안 잡히고, 그러면 abstract 컬럼이 통째로 빈다.
+INLINE_ABSTRACT_PATTERN = re.compile(
+    r"^[*_\s]*(abstract|index terms|keywords)[*_\s]*[—–\-:]{1,3}\s*", re.IGNORECASE
+)
+# 폴백된 쪽에서는 절 표제가 문단 한가운데 섞인다.
+#   "... dependent on the model variant used. VI. CONCLUSION In this work, we ..."
+# 번호 + 온점 + 대문자 표제 다음에 보통 문장이 이어지는 자리를 경계로 본다.
+INLINE_SECTION_PATTERN = re.compile(
+    r"(?:(?<=\.)|(?<=^))\s*((?:[IVXLCDM]{1,5}|\d{1,2})\.)\s+([A-Z][A-Z][A-Z \-]{2,40}?)"
+    r"(?=\s+[A-Z][a-z])"
+)
+
 # 논문의 표준 골격(IMRaD). 어떤 논문이 와도 이 컬럼에 맞춰 저장한다.
 IMRAD_COLUMNS = (
     "abstract",
@@ -876,7 +890,8 @@ class PaperExtractor:
             paragraph = self._join_hyphenation(" ".join(paragraph_lines))
             paragraph = re.sub(r"\s{2,}", " ", paragraph).strip()
             if paragraph:
-                refined.append(paragraph)
+                # 문단에 파묻힌 절 표제를 떼어낸다. 안 그러면 그 절이 앞 절에 흡수된다.
+                refined.extend(self._split_inline_headings(paragraph))
             paragraph_lines.clear()
 
         def flush_table() -> None:
@@ -954,6 +969,39 @@ class PaperExtractor:
             return "", title
         return matched.group(1).rstrip(".").strip(), matched.group(2).strip()
 
+    @classmethod
+    def _split_inline_headings(cls, paragraph: str) -> list[str]:
+        """문단에 파묻힌 절 표제를 떼어내 별도 헤딩 블록으로 만든다.
+
+        표제가 늘 독립된 줄로 오지는 않는다. IEEE 양식은 초록 표제를 본문 첫 줄에
+        붙여 쓰고, 폴백된 쪽에서는 절 표제가 문단 한가운데 섞인다. 그대로 두면
+        그 절이 통째로 앞 절에 흡수되어 abstract·conclusion 컬럼이 빈다.
+        """
+        pieces: list[str] = []
+
+        matched = INLINE_ABSTRACT_PATTERN.match(paragraph)
+        if matched:
+            pieces.append(f"## {matched.group(1).title()}")
+            paragraph = paragraph[matched.end():].strip()
+            if not paragraph:
+                return pieces
+
+        parts = INLINE_SECTION_PATTERN.split(paragraph)
+        if len(parts) == 1:
+            pieces.append(paragraph)
+            return pieces
+
+        # split 결과는 [앞글, 번호, 표제, 뒷글, 번호, 표제, ...] 로 이어진다.
+        leading = parts[0].strip()
+        if leading:
+            pieces.append(leading)
+        for index in range(1, len(parts), 3):
+            number, heading, tail = parts[index], parts[index + 1], parts[index + 2]
+            pieces.append(f"## {number} {heading.strip()}")
+            if tail.strip():
+                pieces.append(tail.strip())
+        return pieces
+
     @staticmethod
     def _numbering_style(numbers: list[str]) -> str:
         """문서가 대단원에 어떤 번호 체계를 쓰는지 정한다. "arabic" | "roman" | "" 를 돌려준다.
@@ -969,13 +1017,32 @@ class PaperExtractor:
             return "arabic"
         return ""
 
+    @staticmethod
+    def _roman_value(number: str) -> int:
+        """로마 숫자를 정수로. 로마 숫자가 아니면 0."""
+        values = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
+        if not number or any(ch not in values for ch in number):
+            return 0
+        total = 0
+        for index, ch in enumerate(number):
+            current = values[ch]
+            following = values.get(number[index + 1], 0) if index + 1 < len(number) else 0
+            total += -current if current < following else current
+        return total
+
     @classmethod
-    def _is_major_section(cls, number: str, title: str, style: str = "") -> bool:
+    def _is_major_section(
+        cls, number: str, title: str, style: str = "", last_major: int = 0
+    ) -> bool:
         """대단원인지 판정한다.
 
         비전 모델이 매기는 헤딩 레벨은 들쭉날쭉해서(같은 논문에서 ``### 1 Introduction``
         과 ``## 3 Original Beam Search`` 가 섞인다) 레벨로는 가릴 수 없다. 문서의 번호
         체계와 절 이름으로 판단한다. 참고문헌은 대단원이어도 담지 않는다.
+
+        로마 체계에서는 번호를 **순서**로 본다. ``C`` 는 로마 숫자 100 이라 라벨만으로는
+        소단원 글자와 구별되지 않지만, 대단원은 I·II·III·IV·V·VI 로 이어지므로 앞
+        대단원 다음 값인지 보면 갈린다. ``V. RESULTS`` 는 살리고 ``C. Tasks`` 는 거른다.
         """
         plain = title.strip().lower().rstrip(".")
         if plain in EXCLUDED_SECTION_TITLES:
@@ -985,10 +1052,8 @@ class PaperExtractor:
             if style == "arabic":
                 return bool(ARABIC_SECTION_NUMBER.match(number))
             if style == "roman":
-                # 한 글자짜리는 소단원 글자일 수 있다. 로마 숫자 첫 항인 I 만 대단원으로 본다.
-                if len(number) == 1:
-                    return number == "I"
-                return bool(ROMAN_SECTION_NUMBER.match(number))
+                value = cls._roman_value(number)
+                return value > 0 and value == last_major + 1
             if ARABIC_SECTION_NUMBER.match(number) or ROMAN_SECTION_NUMBER.match(number):
                 return True
 
@@ -1018,6 +1083,7 @@ class PaperExtractor:
         parts: list[str] = []
         collecting = False
         stopped = False
+        last_major = 0   # 로마 체계에서 대단원 번호가 이어지는지 보기 위해 든다
 
         def close() -> None:
             if collecting and parts:
@@ -1041,9 +1107,13 @@ class PaperExtractor:
                     stopped = True          # 참고문헌부터는 끝까지 담지 않는다
                     continue
 
-                if not stopped and self._is_major_section(heading_no, heading_title, style):
+                if not stopped and self._is_major_section(
+                    heading_no, heading_title, style, last_major
+                ):
                     close()
                     number, title = heading_no, heading_title
+                    if style == "roman":
+                        last_major = self._roman_value(heading_no) or last_major
                     pages, parts = [], []
                     collecting = True
                     continue
