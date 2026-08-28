@@ -91,4 +91,9 @@ LOG_MESSAGES: dict[LogCode, dict[str, str]] = {
         "event": "page_vision_unavailable",
         "message": "NVIDIA API 키가 없어 로컬 추출만 사용합니다.",
     },
+    LogCode.SECTION_CLASSIFY_FALLBACK: {
+        "level": "WARNING",
+        "event": "section_classify_fallback",
+        "message": "대단원 분류를 모델로 하지 못해 낱말 규칙으로 대체했습니다.",
+    },
 }

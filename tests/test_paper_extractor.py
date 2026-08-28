@@ -180,6 +180,81 @@ class ContentPageCountTest(unittest.TestCase):
         self.assertEqual(PaperExtractor._content_page_count(pages), 2)
 
 
+class NumberingStyleTest(unittest.TestCase):
+    """문서가 쓰는 번호 체계로 대단원과 소단원을 가른다."""
+
+    def test_roman_document_is_detected(self):
+        numbers = ["I", "II", "A", "B", "III", "A", "B", "C", "IV"]
+        self.assertEqual(PaperExtractor._numbering_style(numbers), "roman")
+
+    def test_arabic_document_is_detected(self):
+        self.assertEqual(PaperExtractor._numbering_style(["1", "2", "3", "4"]), "arabic")
+
+    def test_no_numbering(self):
+        self.assertEqual(PaperExtractor._numbering_style(["", "", ""]), "")
+
+    def test_letter_c_is_a_subsection_in_a_roman_document(self):
+        """C 는 로마 숫자 100 이기도 해서, 예전에 'C. Tasks' 가 대단원으로 승격됐다."""
+        self.assertFalse(PaperExtractor._is_major_section("C", "Tasks", "roman"))
+        self.assertFalse(PaperExtractor._is_major_section("A", "Environment", "roman"))
+        self.assertFalse(PaperExtractor._is_major_section("B", "Action Set", "roman"))
+
+    def test_roman_numerals_stay_major(self):
+        for number in ("I", "II", "III", "IV"):
+            self.assertTrue(
+                PaperExtractor._is_major_section(number, "SOMETHING", "roman"), number
+            )
+
+    def test_letters_are_not_major_in_an_arabic_document(self):
+        self.assertFalse(PaperExtractor._is_major_section("C", "Tasks", "arabic"))
+        self.assertTrue(PaperExtractor._is_major_section("3", "Original Beam Search", "arabic"))
+
+    def test_dotted_number_is_a_subsection(self):
+        self.assertFalse(PaperExtractor._is_major_section("2.1", "Datasets", "arabic"))
+
+    def test_references_is_never_major(self):
+        for style in ("arabic", "roman", ""):
+            self.assertFalse(PaperExtractor._is_major_section("7", "References", style))
+
+    def test_unnumbered_standard_title_is_major(self):
+        self.assertTrue(PaperExtractor._is_major_section("", "Abstract", "arabic"))
+        self.assertTrue(PaperExtractor._is_major_section("", "Conclusion", "roman"))
+
+
+class SectionLabelTest(unittest.TestCase):
+    def test_arabic_label(self):
+        self.assertEqual(
+            PaperExtractor._split_section_label("### 3 Original Beam Search"),
+            ("3", "Original Beam Search"),
+        )
+
+    def test_roman_label(self):
+        self.assertEqual(
+            PaperExtractor._split_section_label("## I. INTRODUCTION"), ("I", "INTRODUCTION")
+        )
+
+    def test_letter_label(self):
+        self.assertEqual(
+            PaperExtractor._split_section_label("### C. Tasks"), ("C", "Tasks")
+        )
+
+    def test_title_starting_with_an_article_is_not_a_number(self):
+        """'A Comparison of ...' 의 A 를 번호로 오인하면 제목이 잘린다."""
+        self.assertEqual(
+            PaperExtractor._split_section_label("# A Comparison of Prompt Engineering"),
+            ("", "A Comparison of Prompt Engineering"),
+        )
+
+    def test_unnumbered_title(self):
+        self.assertEqual(PaperExtractor._split_section_label("## Abstract"), ("", "Abstract"))
+
+    def test_normalize_label_drops_the_number(self):
+        self.assertEqual(
+            PaperExtractor._normalize_label("3 Original Beam Search"),
+            PaperExtractor._normalize_label("Original Beam Search"),
+        )
+
+
 class StorageTest(unittest.TestCase):
     """경로를 주입할 수 있으므로 실제 데이터 없이 저장 동작을 확인한다."""
 
