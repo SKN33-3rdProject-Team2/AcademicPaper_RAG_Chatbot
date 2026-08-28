@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
 import urllib.error
 import urllib.request
 from pathlib import Path
+import yaml
 
-
-OLLAMA_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "ollama_config.yaml"
+# 파일 위치: src/services/ollama_service.py -> 부모의 부모는 src/
+SRC_DIR = Path(__file__).resolve().parent.parent
+OLLAMA_CONFIG_PATH = SRC_DIR / "config" / "ollama_config.yaml"
 
 
 def _load_ollama_config() -> dict[str, str]:
@@ -17,14 +20,25 @@ def _load_ollama_config() -> dict[str, str]:
         raise RuntimeError(f"Ollama 설정 파일을 찾을 수 없습니다: {OLLAMA_CONFIG_PATH}")
 
     config: dict[str, str] = {}
-    for line in OLLAMA_CONFIG_PATH.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or ":" not in line:
-            continue
-        key, value = line.split(":", maxsplit=1)
-        value = value.strip().strip('"').strip("'")
-        if key in {"model", "host"} and value:
-            config[key] = value
+
+    # yaml 모듈을 이용해 안전하게 로드하도록 개선
+    try:
+        with open(OLLAMA_CONFIG_PATH, 'r', encoding='utf-8') as f:
+            yaml_data = yaml.safe_load(f)
+            if isinstance(yaml_data, dict):
+                for k, v in yaml_data.items():
+                    if k in {"model", "host"} and v:
+                        config[k] = str(v).strip()
+    except Exception:
+        # 기존 라인 파싱 방식 Fallback
+        for line in OLLAMA_CONFIG_PATH.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or ":" not in line:
+                continue
+            key, value = line.split(":", maxsplit=1)
+            value = value.strip().strip('"').strip("'")
+            if key in {"model", "host"} and value:
+                config[key] = value
 
     if "model" not in config or "host" not in config:
         raise RuntimeError("ollama_config.yaml에는 model과 host 설정이 필요합니다.")
