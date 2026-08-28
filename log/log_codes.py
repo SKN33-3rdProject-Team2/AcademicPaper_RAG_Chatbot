@@ -8,7 +8,7 @@ from enum import IntEnum
 class LogCode(IntEnum):
     """기능별 로그 코드.
 
-    1xxx는 Ollama, 2xxx는 Keyword 기능을 나타낸다.
+    1xxx는 Ollama, 2xxx는 Keyword, 5xxx는 논문 본문 추출 기능을 나타낸다.
     x1xx는 시작·상태, x2xx는 성공, x4xx는 입력 거부, x5xx는 오류다.
     """
 
@@ -23,3 +23,11 @@ class LogCode(IntEnum):
     KEYWORD_GENERATION_FALLBACK = 2300
     KEYWORD_GENERATION_REJECTED = 2400
     KEYWORD_GENERATION_FAILED = 2500
+
+    PAPER_EXTRACTION_STARTED = 5100
+    PAPER_EXTRACTION_SKIPPED = 5101
+    PAPER_EXTRACTION_SUCCEEDED = 5200
+    PAPER_EXTRACTION_REJECTED = 5400
+    PAPER_EXTRACTION_FAILED = 5500
+    PAGE_VISION_FALLBACK = 5401
+    PAGE_VISION_UNAVAILABLE = 5402

@@ -56,4 +56,39 @@ LOG_MESSAGES: dict[LogCode, dict[str, str]] = {
         "event": "keyword_generation_failed",
         "message": "Ollama가 중복 없는 유효한 학술 검색 키워드 6개를 반환하지 않았습니다.",
     },
+    LogCode.PAPER_EXTRACTION_STARTED: {
+        "level": "INFO",
+        "event": "paper_extraction_started",
+        "message": "논문 PDF 본문 추출을 시작합니다.",
+    },
+    LogCode.PAPER_EXTRACTION_SKIPPED: {
+        "level": "INFO",
+        "event": "paper_extraction_skipped",
+        "message": "이미 추출된 논문이라 건너뜁니다.",
+    },
+    LogCode.PAPER_EXTRACTION_SUCCEEDED: {
+        "level": "INFO",
+        "event": "paper_extraction_succeeded",
+        "message": "논문 본문을 가공해 저장했습니다.",
+    },
+    LogCode.PAPER_EXTRACTION_REJECTED: {
+        "level": "WARNING",
+        "event": "paper_extraction_rejected",
+        "message": "요청한 논문의 PDF를 찾지 못해 추출하지 않았습니다.",
+    },
+    LogCode.PAPER_EXTRACTION_FAILED: {
+        "level": "ERROR",
+        "event": "paper_extraction_failed",
+        "message": "논문 PDF 본문 추출에 실패했습니다.",
+    },
+    LogCode.PAGE_VISION_FALLBACK: {
+        "level": "WARNING",
+        "event": "page_vision_fallback",
+        "message": "해당 쪽의 비전 판독에 실패해 로컬 추출 결과로 대체했습니다.",
+    },
+    LogCode.PAGE_VISION_UNAVAILABLE: {
+        "level": "WARNING",
+        "event": "page_vision_unavailable",
+        "message": "NVIDIA API 키가 없어 로컬 추출만 사용합니다.",
+    },
 }

@@ -1,0 +1,17 @@
+# 팀 전체에서 동일하게 사용하는 NVIDIA Build API 설정
+# API 키는 이 파일이 아니라 .env 의 NVIDIA_API_KEY 로 관리한다.
+#
+# 논문 페이지를 이미지로 넣어 마크다운·LaTeX 로 받아내는 데 쓴다.
+# nemotron-3-nano-omni 는 총 30B 이지만 활성 파라미터가 3B 인 MoE 라,
+# 같은 페이지를 llama-3.2-11b-vision(64초) 보다 8배 빠른 8초에 처리하면서
+# 분수(\frac)·근호(\sqrt)·지시함수(\mathbb{1})까지 복원한다.
+base_url: https://integrate.api.nvidia.com/v1
+vision_model: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
+
+# 페이지를 이미지로 만들 때의 해상도. 150 이면 한 쪽이 약 110KB, 프롬프트 2천 토큰이다.
+render_dpi: 150
+
+# nemotron 계열은 추론 모델이라 기본값으로 사고 과정을 따로 생성한다.
+# 페이지를 옮겨 적는 데는 필요 없고, 켜두면 사고 토큰이 2만 자를 넘기며
+# 같은 쪽이 14초에서 82초로 느려진다.
+disable_thinking: true
