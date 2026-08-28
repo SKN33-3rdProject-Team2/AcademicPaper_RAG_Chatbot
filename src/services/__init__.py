@@ -1,1 +1,14 @@
-"""외부 Ollama API 호출을 담당하는 서비스 모듈."""
+"""외부 Ollama API 호출을 담당하는 서비스 패키지."""
+
+import sys
+from pathlib import Path
+
+
+SRC_DIR = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = SRC_DIR.parent
+OLLAMA_CONFIG_PATH = SRC_DIR / "config" / "ollama_config.yaml"
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+__all__ = ["OLLAMA_CONFIG_PATH", "PROJECT_ROOT", "SRC_DIR"]

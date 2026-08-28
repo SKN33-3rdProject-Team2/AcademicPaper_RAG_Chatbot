@@ -3,21 +3,12 @@
 from __future__ import annotations
 
 import json
-import sys
 from collections.abc import Callable
-from pathlib import Path
 
 from langchain_core.tools import tool
-from Log import AppLogger, LogCode
+from log import AppLogger, LogCode
 
-# ---------------------------------------------------------------------
-# 🚨 [모듈 임포트 경로 설정]
-SRC_DIR = Path(__file__).resolve().parent.parent
-if str(SRC_DIR) not in sys.path:
-    sys.path.append(str(SRC_DIR))
-
-from services.ollama_service import OllamaServiceError, generate
-# ---------------------------------------------------------------------
+from services.ollama_service import generate
 
 logger = AppLogger(__name__)
 
@@ -26,7 +17,7 @@ class KeywordToolError(RuntimeError):
     """키워드 Tool이 유효한 검색 키워드를 만들지 못했을 때 발생한다."""
 
 
-def _clean_keywords(values: object, max_keywords: int = 6) -> list[str]:
+def _clean_keywords(values: object) -> list[str]:
     if not isinstance(values, list):
         return []
     keywords: list[str] = []
@@ -38,7 +29,7 @@ def _clean_keywords(values: object, max_keywords: int = 6) -> list[str]:
         if cleaned and cleaned.casefold() not in seen:
             seen.add(cleaned.casefold())
             keywords.append(cleaned)
-    return keywords[:max_keywords]
+    return keywords
 
 
 class KeywordTool:
@@ -56,76 +47,62 @@ class KeywordTool:
 
         logger.log(LogCode.KEYWORD_GENERATION_STARTED, query=raw_query)
 
-        # 💡 [방어 로직] "LLM", "AI" 등 너무 짧은 단어는 Ollama가 거부하므로 자동으로 의미 확장 보완
-        if len(raw_query) <= 3:
-            raw_query = f"{raw_query} technology and models"
-
         prompt = f"""You are an expert in academic literature search for arXiv.
 Your task is to convert the user's research topic into exactly 6 concise, highly specific English academic search terms or technical keywords.
 
 [Rules]
-1. DO NOT use vague conversational phrases, adjectives, or opinions.
-2. Use precise computer science or technical terminology (e.g., instead of short words, expand them into standard academic terms like 'Large Language Models', 'Transformer', 'Neural Networks').
-3. Each phrase must be short (1 to 3 words) and ideal for boolean search engines like arXiv.
-4. Return JSON only in this exact shape:
+1. Every keyword must be directly and clearly related to the user's original research topic.
+2. Return exactly 6 unique keywords. Never return fewer or more than 6.
+3. DO NOT use vague conversational phrases, adjectives, opinions, or unrelated general terms.
+4. Use precise academic or technical terminology appropriate for arXiv.
+5. Each keyword must be a short English phrase of 1 to 3 words and suitable for an arXiv search.
+6. Return JSON only in this exact shape, without explanations or additional fields:
 {{"keywords": ["keyword one", "keyword two", "keyword three", "keyword four", "keyword five", "keyword six"]}}
 
 User topic: {raw_query}"""
 
-        try:
-            response = self._generator(prompt, response_format="json")
-            payload = json.loads(response)
-        except Exception as exc:
-            logger.log(
-                LogCode.KEYWORD_GENERATION_FALLBACK,
-                query=user_query.strip(),
-                reason="ollama_request_or_json_error",
-                error_type=type(exc).__name__,
-                error=str(exc),
-            )
-            # 💡 [Fallback 방어] Ollama 연결 실패나 파싱 에러 시 절대 뻗지 않고 기본 학술 키워드 제공
-            base_kw = user_query.strip()
-            return {"keywords": [base_kw, f"{base_kw} models", f"{base_kw} architecture", "Deep Learning", "Neural Networks", "Transformer"]}
+        response = self._generator(prompt, response_format="json")
+        payload = json.loads(response)
 
         if not isinstance(payload, dict):
             logger.log(
-                LogCode.KEYWORD_GENERATION_FALLBACK,
-                query=user_query.strip(),
+                LogCode.KEYWORD_GENERATION_FAILED,
+                query=raw_query,
                 reason="response_is_not_object",
                 response_type=type(payload).__name__,
             )
-            return {"keywords": [user_query, "Large Language Models", "Deep Learning", "Neural Networks", "Transformer", "Artificial Intelligence"]}
+            raise KeywordToolError("Ollama 응답이 JSON 객체 형식이 아닙니다.")
 
         error_message = payload.get("error")
         if isinstance(error_message, str) and error_message.strip():
             logger.log(
-                LogCode.KEYWORD_GENERATION_FALLBACK,
-                query=user_query.strip(),
+                LogCode.KEYWORD_GENERATION_FAILED,
+                query=raw_query,
                 reason="ollama_response_error",
                 error=error_message.strip(),
             )
-            # 에러가 나도 기본 키워드로 자동 우회 처리
-            base_kw = user_query.strip()
-            return {"keywords": [base_kw, f"{base_kw} models", "Large Language Models", "Deep Learning", "Neural Networks", "Transformer"]}
+            raise KeywordToolError(error_message.strip())
 
         keywords = _clean_keywords(payload.get("keywords"))
 
-        # 만약 6개가 안 채워졌다면 부족한 만큼 기본 키워드로 채워넣기
-        if len(keywords) < 6:
-            defaults = [user_query.strip(), "Large Language Models", "Deep Learning", "Neural Networks", "Transformer", "Artificial Intelligence"]
-            for d in defaults:
-                if d.casefold() not in [k.casefold() for k in keywords]:
-                    keywords.append(d)
-                if len(keywords) == 6:
-                    break
+        if len(keywords) != 6:
+            logger.log(
+                LogCode.KEYWORD_GENERATION_FAILED,
+                query=raw_query,
+                reason="invalid_keyword_count",
+                keyword_count=len(keywords),
+            )
+            raise KeywordToolError(
+                f"Ollama는 중복 없는 유효한 키워드 6개를 반환해야 합니다: {len(keywords)}개 반환됨"
+            )
 
         logger.log(
             LogCode.KEYWORD_GENERATION_SUCCEEDED,
-            query=user_query.strip(),
-            keywords=keywords[:6],
-            keyword_count=len(keywords[:6]),
+            query=raw_query,
+            keywords=keywords,
+            keyword_count=len(keywords),
         )
-        return {"keywords": keywords[:6]}
+        return {"keywords": keywords}
 
 
 @tool
