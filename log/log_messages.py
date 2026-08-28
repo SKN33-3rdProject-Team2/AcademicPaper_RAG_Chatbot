@@ -81,4 +81,14 @@ LOG_MESSAGES: dict[LogCode, dict[str, str]] = {
         "event": "paper_extraction_failed",
         "message": "논문 PDF 본문 추출에 실패했습니다.",
     },
+    LogCode.PAGE_VISION_FALLBACK: {
+        "level": "WARNING",
+        "event": "page_vision_fallback",
+        "message": "해당 쪽의 비전 판독에 실패해 로컬 추출 결과로 대체했습니다.",
+    },
+    LogCode.PAGE_VISION_UNAVAILABLE: {
+        "level": "WARNING",
+        "event": "page_vision_unavailable",
+        "message": "NVIDIA API 키가 없어 로컬 추출만 사용합니다.",
+    },
 }

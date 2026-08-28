@@ -3,8 +3,12 @@
 data/paper_save 의 PDF 중 사용자가 고른 논문을 팀 정제 규칙에 따라 가공하고,
 그 결과를 data/paper_extract 의 DB와 JSON에 저장한다.
 
-어떤 논문을 넣어도 같은 규칙을 거치므로 결과 형태가 일정하다. 모델을 쓰지 않아
-같은 PDF는 몇 번을 돌려도 같은 결과가 나온다.
+쪽을 이미지로 만들어 비전 모델에 넣고, 모든 쪽에 같은 지시문을 적용한다. 그래서
+어떤 논문을 넣어도 결과 형태가 일정하고, 분수·근호처럼 평문 추출로는 살릴 수 없는
+표기까지 LaTeX 으로 복원된다.
+
+모델을 부르지 못하는 쪽은 로컬 PyMuPDF 추출로 되돌린다. 키가 없거나 서버가 죽어도
+파이프라인 전체가 멈추지는 않는다. ``use_vision=False`` 로 로컬 경로만 쓸 수도 있다.
 
 다른 파일에서 그대로 가져다 쓸 수 있다::
 
@@ -20,11 +24,13 @@ LangChain 에이전트에는 ``extract_paper_text`` 를 도구로 넘기면 된�
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import sqlite3
 import sys
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,6 +48,12 @@ from langchain_core.tools import tool
 
 from log.app_logger import AppLogger
 from log.log_codes import LogCode
+from services.nvidia_service import (
+    NVIDIA_CONFIG,
+    NvidiaServiceError,
+    describe_image,
+    is_available,
+)
 # ---------------------------------------------------------------------
 
 logger = AppLogger(__name__)
@@ -88,6 +100,25 @@ OVERSIZED_GLYPH_RATIO = 1.4
 # 표 탐지가 빈 격자를 물어오는 일이 있어, 이 비율 이상 칸이 차 있어야 표로 인정한다.
 TABLE_MIN_FILLED_RATIO = 0.4
 
+# 쪽은 서로 독립이라 동시에 보낼 수 있다. 16쪽 논문으로 재보면 워커 4개는 349초,
+# 8개는 67초, 16개는 132초였다. 8개를 넘기면 서버가 포화되어 오히려 느려진다.
+DEFAULT_VISION_WORKERS = 8
+
+# 어떤 논문을 넣어도 같은 모양으로 나오게 하는 지시문. 일관성의 핵심 손잡이다.
+VISION_PROMPT = (
+    "Transcribe this page of an academic paper as GitHub-flavored Markdown.\n"
+    "Rules:\n"
+    "1. Write every formula as LaTeX: inline math as $...$, display math as $$...$$.\n"
+    "   Use \\frac, \\sqrt, \\sum, \\mathbb, ^{} and _{} exactly as the page shows.\n"
+    "2. Render tables as Markdown tables with a header row. Never use LaTeX tabular.\n"
+    "3. Section titles become Markdown headings (## for sections, ### for subsections).\n"
+    "4. Keep figure and table captions as normal lines starting with 'Figure N:' or 'Table N:'.\n"
+    "   Do not describe the figure image itself.\n"
+    "5. Drop page numbers, running headers, footers and the arXiv stamp.\n"
+    "6. Transcribe every word. Never summarize, translate, or add commentary.\n"
+    "7. Output only the Markdown, with no preamble and no surrounding code fence."
+)
+
 
 class PaperExtractionError(RuntimeError):
     """논문 본문 추출을 완료하지 못했을 때 발생한다."""
@@ -131,12 +162,16 @@ class PaperExtractor:
         pdf_dir: str | Path | None = None,
         metadata_db: str | Path | None = None,
         output_dir: str | Path | None = None,
+        use_vision: bool = True,
+        vision_workers: int = DEFAULT_VISION_WORKERS,
     ) -> None:
         self.pdf_dir = Path(pdf_dir) if pdf_dir else DEFAULT_PDF_DIR
         self.metadata_db = Path(metadata_db) if metadata_db else DEFAULT_METADATA_DB
         self.output_dir = Path(output_dir) if output_dir else DEFAULT_OUTPUT_DIR
         self.db_path = self.output_dir / "extracted_papers.db"
         self.json_path = self.output_dir / "extracted_papers.json"
+        self.use_vision = use_vision
+        self.vision_workers = max(1, vision_workers)
 
     # ── 조회 ────────────────────────────────────────────────────────
 
@@ -310,11 +345,40 @@ class PaperExtractor:
         if not pdf_path.is_file():
             raise PaperExtractionError(f"PDF 파일을 찾을 수 없습니다: {pdf_path}")
 
-        pages: list[str] = []
         with pymupdf.open(pdf_path) as document:
-            for page in document:
-                pages.append(self._normalize(self._read_page(page)))
-        return pages
+            local_pages = [self._read_page(page) for page in document]
+            if not self.use_vision:
+                return [self._normalize(page) for page in local_pages]
+            if not is_available():
+                logger.log(LogCode.PAGE_VISION_UNAVAILABLE)
+                return [self._normalize(page) for page in local_pages]
+
+            dpi = int(NVIDIA_CONFIG.get("render_dpi", 150))
+            images = [
+                base64.b64encode(page.get_pixmap(dpi=dpi).tobytes("png")).decode()
+                for page in document
+            ]
+
+        pages = self._read_pages_with_vision(images, local_pages)
+        return [self._normalize(page) for page in pages]
+
+    def _read_pages_with_vision(self, images: list[str], local_pages: list[str]) -> list[str]:
+        """쪽 이미지를 모델에 보내 마크다운으로 받는다.
+
+        같은 지시문을 모든 쪽에 똑같이 적용하므로 어떤 논문을 넣어도 결과 형태가
+        일정하다. 쪽은 서로 독립이라 몇 개씩 동시에 보내 시간을 줄이고,
+        실패한 쪽만 로컬 추출 결과로 되돌린다.
+        """
+
+        def read_one(index: int) -> str:
+            try:
+                return describe_image(images[index], VISION_PROMPT, max_tokens=4096).strip()
+            except NvidiaServiceError as exc:
+                logger.log(LogCode.PAGE_VISION_FALLBACK, page=index + 1, reason=str(exc)[:120])
+                return local_pages[index]
+
+        with ThreadPoolExecutor(max_workers=self.vision_workers) as pool:
+            return list(pool.map(read_one, range(len(images))))
 
     @staticmethod
     def _render_table(table) -> str:
