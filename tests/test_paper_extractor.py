@@ -9,8 +9,10 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
+from src.feature import paper_extractor
 from src.feature.paper_extractor import (
     ExtractionResult,
+    NvidiaServiceError,
     PaperExtractionError,
     PaperExtractor,
     extract_paper_text,
@@ -271,6 +273,73 @@ class SectionLabelTest(unittest.TestCase):
             PaperExtractor._normalize_label("3 Original Beam Search"),
             PaperExtractor._normalize_label("Original Beam Search"),
         )
+
+
+class BoldHeadingTest(unittest.TestCase):
+    """비전 모델이 굵은 글씨로 내놓는 표제도 절 구분에 잡혀야 한다."""
+
+    def test_bold_abstract_becomes_heading(self):
+        self.assertEqual(PaperExtractor._as_heading("**Abstract**"), "## Abstract")
+
+    def test_bold_numbered_heading(self):
+        self.assertEqual(
+            PaperExtractor._as_heading("**3 PyThaiNLP and Its Ecosystem**"),
+            "## 3 PyThaiNLP and Its Ecosystem",
+        )
+
+    def test_emphasised_body_line_is_not_a_heading(self):
+        self.assertIsNone(PaperExtractor._as_heading("**important** for our purposes"))
+
+    def test_bare_emphasis_marks_are_not_a_heading(self):
+        self.assertIsNone(PaperExtractor._as_heading("***"))
+
+
+class VisionRetryTest(unittest.TestCase):
+    """동시요청 제한에 밀린 쪽을 순차로 다시 보내 되살리는지."""
+
+    def setUp(self):
+        self.extractor = PaperExtractor.__new__(PaperExtractor)
+        self.extractor.vision_workers = 4
+
+    def run_with(self, fake):
+        """describe_image 를 가짜로 바꿔 한 번 돌린다."""
+        original = paper_extractor.describe_image
+        paper_extractor.describe_image = fake
+        try:
+            return self.extractor._read_pages_with_vision(
+                ["img0", "img1", "img2"],
+                ["로컬0", "로컬1", "로컬2"],
+                with_tables=False,
+            )
+        finally:
+            paper_extractor.describe_image = original
+
+    def test_stalled_page_is_recovered_on_second_pass(self):
+        seen = []
+
+        def fake(image, prompt, **kwargs):
+            seen.append(image)
+            if image == "img1" and seen.count("img1") == 1:
+                raise NvidiaServiceError("Worker local total request limit reached (16/16)")
+            return f"비전 {image} 본문입니다. 충분히 긴 문장을 담고 있습니다."
+
+        pages, n_vision = self.run_with(fake)
+        self.assertEqual(n_vision, 3)
+        self.assertIn("img1", pages[1])
+        self.assertEqual(seen.count("img1"), 2)
+
+    def test_all_pages_failing_is_not_retried(self):
+        """서비스가 내려간 경우까지 한 번 더 훑지는 않는다."""
+        seen = []
+
+        def fake(image, prompt, **kwargs):
+            seen.append(image)
+            raise NvidiaServiceError("service unavailable")
+
+        pages, n_vision = self.run_with(fake)
+        self.assertEqual(n_vision, 0)
+        self.assertEqual(pages, ["로컬0", "로컬1", "로컬2"])
+        self.assertEqual(len(seen), 3)
 
 
 class StorageTest(unittest.TestCase):

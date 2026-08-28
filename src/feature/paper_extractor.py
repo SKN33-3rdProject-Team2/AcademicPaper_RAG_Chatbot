@@ -659,6 +659,19 @@ class PaperExtractor:
 
         with ThreadPoolExecutor(max_workers=self.vision_workers) as pool:
             outcomes = list(pool.map(read_one, range(len(images))))
+
+        # 동시요청 제한에 걸려 밀린 쪽은 병렬로 다시 보내도 같은 자리에서 또 밀린다.
+        # 남은 쪽만 한 장씩 순서대로 보내면 제한에 걸리지 않아 대개 여기서 회복된다.
+        # 폴백된 쪽은 2단 조판이 뒤섞여 대단원 표제가 본문 문장 사이로 끼어들므로,
+        # 몇 초 더 쓰더라도 되살리는 편이 낫다. 전부 실패했다면 서비스가 내려간
+        # 것이라 보고 다시 훑지 않는다.
+        stalled = [index for index, (_, ok) in enumerate(outcomes) if not ok]
+        if stalled and len(stalled) < len(images):
+            for index in stalled:
+                text, ok = read_one(index)
+                if ok:
+                    outcomes[index] = (text, True)
+
         return [text for text, _ in outcomes], sum(1 for _, ok in outcomes if ok)
 
     @staticmethod
@@ -842,6 +855,14 @@ class PaperExtractor:
         stripped = line.strip()
         if not stripped or len(stripped) > 80:
             return None
+
+        # 비전 모델은 표제를 `**Abstract**` 처럼 굵은 글씨 한 줄로 내놓기도 한다.
+        # 강조 기호를 벗겨야 아는 표제로 알아보고, 벗긴 뒤에도 아래 검사들을
+        # 모두 통과해야 헤딩이 되므로 본문 강조가 표제로 둔갑하지는 않는다.
+        stripped = stripped.strip("*_ ").strip()
+        if not stripped:
+            return None
+
         if REFERENCE_HEADING_PATTERN.match(stripped):
             return "## References"
 
