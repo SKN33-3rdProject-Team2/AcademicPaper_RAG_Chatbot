@@ -48,6 +48,7 @@ PDF 다운로드 및 하이브리드 파싱
 | Agent Workflow | LangGraph |
 | Paper Search | arXiv API |
 | PDF Parsing | PyMuPDF, NVIDIA Build API |
+| Local LLM | Ollama, `qwen2.5:3b` |
 | Embedding | Hugging Face `BAAI/bge-m3` |
 | Vector DB | ChromaDB |
 | Architecture | RAG, Human-in-the-Loop, Multi-Agent |
@@ -74,15 +75,69 @@ Project-Team-2/
 - `src/feature/`: 피처 생성 및 가공과 관련된 기능과 함수를 구현합니다.
 - `src/tools/`: 여러 기능에서 공통으로 사용하는 도구와 유틸리티 함수를 구현합니다.
 
-## 시작하기
+## 실행 방법
 
-저장소를 내려받은 뒤 `.env.example`을 참고하여 `.env`에 필요한 환경변수를 설정합니다.
+### 1. 환경변수 설정
+
+저장소를 내려받은 뒤 `.env.example` 파일을 복사하여 `.env` 파일을 생성합니다.
+
+#### macOS / Linux
 
 ```bash
 cp .env.example .env
 ```
 
-실제 API 키, 비밀번호 등 민감한 값은 `.env.example`이나 소스코드에 작성하지 않습니다.
+#### Windows PowerShell
+
+```powershell
+Copy-Item .env.example .env
+```
+
+`.env.example` 파일은 다음과 같이 구성합니다.
+
+```dotenv
+# Ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen2.5:3b
+```
+
+> 실제 API 키, 비밀번호 등 민감한 정보는 `.env.example`이나 소스코드에 작성하지 않습니다.
+
+### 2. Ollama 설치
+
+Windows PowerShell에서 다음 명령어를 실행합니다.
+
+```powershell
+irm https://ollama.com/install.ps1 | iex
+```
+
+> 위 명령어는 Python 명령어가 아닌 Windows PowerShell 명령어입니다.
+
+설치가 완료되면 PowerShell을 종료한 후 다시 실행합니다.
+
+macOS 또는 Linux 사용자는 [Ollama 공식 다운로드 페이지](https://ollama.com/download)에서 운영체제에 맞는 설치 방법을 확인합니다.
+
+### 3. Qwen2.5 3B 모델 다운로드
+
+터미널 또는 PowerShell에서 다음 명령어를 실행합니다.
+
+```bash
+ollama pull qwen2.5:3b
+```
+
+### 4. 설치 확인
+
+설치된 모델 목록을 확인합니다.
+
+```bash
+ollama list
+```
+
+모델을 직접 실행하여 정상 작동 여부를 확인합니다.
+
+```bash
+ollama run qwen2.5:3b
+```
 
 ---
 
@@ -160,11 +215,4 @@ cp .env.example .env
 - 다른 팀원의 브랜치에 직접 Commit 또는 Force Push하기
 - 다른 팀원의 브랜치를 동의 없이 병합 대상으로 삼기
 - 충돌 해결 과정에서 다른 팀원의 코드를 임의로 삭제하거나 동의 없이 수정하기
-
-
-## 시작하기
-
-저장소를 내려받은 뒤 `.env.example`을 참고하여 `.env`에 필요한 환경변수를 설정합니다.
-
-> 실제 API 키, 비밀번호 등 민감한 값은 `.env.example`이나 소스코드에 작성하지 마세요.
 
