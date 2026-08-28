@@ -104,6 +104,23 @@ TABLE_MIN_FILLED_RATIO = 0.4
 # 8개는 67초, 16개는 132초였다. 8개를 넘기면 서버가 포화되어 오히려 느려진다.
 DEFAULT_VISION_WORKERS = 8
 
+# 비전 판독이 반복 루프에 빠졌는지 가려내는 신호들. 호출이 성공해도 내용이 망가질 수 있다.
+UNK_RUN_PATTERN = re.compile(r"(?:<unk>\s*){4,}")
+REPEATED_RUN_PATTERN = re.compile(r"(.{2,40}?)\1{6,}", re.DOTALL)
+# 마크다운 문법이 붙어 로컬 추출보다 길어지는 건 정상이지만, 몇 배가 되면 반복이다.
+VISION_LENGTH_LIMIT = 3.0
+
+# 참고문헌을 뺀 본문이 이 쪽 수 이하일 때만 표를 담는다. 긴 논문은 표·그림을 모두 버려
+# 본문만 남긴다. 긴 논문에서 표까지 옮기면 분량과 처리 시간이 감당이 안 되기 때문이다.
+MAX_PAGES_FOR_TABLES = 8
+REFERENCE_PAGE_PATTERN = re.compile(
+    r"^\s*(?:\d+\.?\s*)?(?:references|bibliography)\s*$", re.IGNORECASE | re.MULTILINE
+)
+# 물리·수학 학술지 양식은 "References" 제목 없이 [1] 부터 바로 나열하는 일이 흔하다.
+# 제목만 찾으면 참고문헌이 통째로 본문으로 세어진다.
+CITATION_ENTRY_PATTERN = re.compile(r"^\s*\[\d{1,3}\]\s", re.MULTILINE)
+CITATION_ENTRIES_PER_PAGE = 5
+
 # 어떤 논문을 넣어도 같은 모양으로 나오게 하는 지시문. 일관성의 핵심 손잡이다.
 VISION_PROMPT = (
     "Transcribe this page of an academic paper as GitHub-flavored Markdown.\n"
@@ -117,6 +134,20 @@ VISION_PROMPT = (
     "5. Drop page numbers, running headers, footers and the arXiv stamp.\n"
     "6. Transcribe every word. Never summarize, translate, or add commentary.\n"
     "7. Output only the Markdown, with no preamble and no surrounding code fence."
+)
+
+# 긴 논문에서 쓰는 지시문. 본문 서술만 남기고 표와 그림은 통째로 건너뛴다.
+VISION_PROMPT_TEXT_ONLY = (
+    "Transcribe this page of an academic paper as GitHub-flavored Markdown.\n"
+    "Rules:\n"
+    "1. Write every formula as LaTeX: inline math as $...$, display math as $$...$$.\n"
+    "   Use \\frac, \\sqrt, \\sum, \\mathbb, ^{} and _{} exactly as the page shows.\n"
+    "2. Skip tables and figures entirely. Do not transcribe table contents, do not write\n"
+    "   Markdown tables, and do not write figure or table captions.\n"
+    "3. Section titles become Markdown headings (## for sections, ### for subsections).\n"
+    "4. Drop page numbers, running headers, footers and the arXiv stamp.\n"
+    "5. Transcribe every sentence of the running text. Never summarize or add commentary.\n"
+    "6. Output only the Markdown, with no preamble and no surrounding code fence."
 )
 
 
@@ -142,11 +173,21 @@ class ExtractionResult:
     source_pdf: str
     content: str
     n_pages: int
+    n_vision_pages: int = 0
     skipped: bool = False
 
     @property
     def n_chars(self) -> int:
         return len(self.content)
+
+    @property
+    def extractor(self) -> str:
+        """이 결과가 어떤 방식으로 나왔는지. 나중에 행만 보고도 구분할 수 있어야 한다."""
+        if not self.n_vision_pages:
+            return "pymupdf"
+        if self.n_vision_pages == self.n_pages:
+            return "vision"
+        return f"mixed({self.n_vision_pages}/{self.n_pages})"
 
 
 class PaperExtractor:
@@ -172,6 +213,8 @@ class PaperExtractor:
         self.json_path = self.output_dir / "extracted_papers.json"
         self.use_vision = use_vision
         self.vision_workers = max(1, vision_workers)
+        # DB에 제목이 없는 PDF는 파일 안에 든 제목을 대신 쓴다.
+        self._embedded_title = ""
 
     # ── 조회 ────────────────────────────────────────────────────────
 
@@ -196,11 +239,21 @@ class PaperExtractor:
         with closing(sqlite3.connect(self.metadata_db)) as conn:
             rows = conn.execute("SELECT id, title FROM papers").fetchall()
 
-        refs = []
+        by_path: dict[Path, PaperRef] = {}
         for paper_id, title in rows:
             path = self.pdf_dir / f"{self.safe_title(title or '')}.pdf"
             if path.is_file():
-                refs.append(PaperRef(id=paper_id, title=title, pdf_path=path))
+                by_path[path] = PaperRef(id=paper_id, title=title, pdf_path=path)
+
+        # 사용자가 직접 넣어둔 PDF도 잡는다. Agent 1 을 거치지 않고 파일만 떨어뜨리는
+        # 경우가 있고, 그때 파일명은 보통 arXiv id 다.
+        if self.pdf_dir.is_dir():
+            for path in sorted(self.pdf_dir.glob("*.pdf")):
+                by_path.setdefault(
+                    path, PaperRef(id=path.stem, title=path.stem, pdf_path=path)
+                )
+
+        refs = list(by_path.values())
         refs.sort(key=lambda ref: ref.title.lower())
         return refs
 
@@ -254,6 +307,9 @@ class PaperExtractor:
                 source_pdf=record.get("source_pdf", ""),
                 content=record.get("content", ""),
                 n_pages=int(record.get("n_pages") or 0),
+                n_vision_pages=int(record.get("n_pages") or 0)
+                if str(record.get("extractor", "")).startswith("vision")
+                else 0,
                 skipped=True,
             )
 
@@ -265,20 +321,26 @@ class PaperExtractor:
 
         logger.log(LogCode.PAPER_EXTRACTION_STARTED, paper_id=paper_id, title=ref.title)
         try:
-            pages = self._read_pdf(ref.pdf_path)
-            content = self._refine(pages)
+            pages, n_vision, with_tables = self._read_pdf(ref.pdf_path)
+            content = self._refine(pages, with_tables)
         except PaperExtractionError:
             raise
         except Exception as exc:
             logger.log(LogCode.PAPER_EXTRACTION_FAILED, paper_id=paper_id, reason=str(exc))
             raise PaperExtractionError(f"'{paper_id}' 추출에 실패했습니다: {exc}") from exc
 
+        # DB를 거치지 않은 PDF는 제목이 파일명이다. 파일에 든 제목이 있으면 그쪽이 낫다.
+        title = ref.title
+        if title == ref.pdf_path.stem and self._embedded_title:
+            title = self._embedded_title
+
         result = ExtractionResult(
             id=ref.id,
-            title=ref.title,
+            title=title,
             source_pdf=ref.pdf_path.name,
             content=content,
             n_pages=len(pages),
+            n_vision_pages=n_vision,
         )
         self._save(result)
         logger.log(
@@ -286,6 +348,7 @@ class PaperExtractor:
             paper_id=paper_id,
             pages=result.n_pages,
             chars=result.n_chars,
+            extractor=result.extractor,
         )
         return result
 
@@ -331,11 +394,14 @@ class PaperExtractor:
         filled = sum(1 for cell in cells if cell and str(cell).strip())
         return filled / len(cells) >= TABLE_MIN_FILLED_RATIO
 
-    def _read_pdf(self, pdf_path: Path) -> list[str]:
+    def _read_pdf(self, pdf_path: Path) -> tuple[list[str], int, bool]:
         """페이지별 텍스트를 뽑는다.
 
         표는 PyMuPDF 의 표 탐지로 마크다운 표로 살리고, 나머지 본문은 span 단위로
         읽어 위·아래 첨자를 되살린다. 그림은 버린다.
+
+        (쪽별 텍스트, 비전으로 읽어낸 쪽 수, 표 포함 여부) 를 돌려준다.
+        참고문헌을 뺀 본문이 짧은 논문에서만 표를 담고, 긴 논문은 표·그림을 버린다.
 
         표 탐지와 첨자 복원을 함께 쓰는 이유는 어느 한쪽만으로는 부족해서다.
         pymupdf4llm 은 표를 잘 뽑지만 아래첨자를 통째로 잃고(``∇_θΦ_a`` 가
@@ -346,12 +412,15 @@ class PaperExtractor:
             raise PaperExtractionError(f"PDF 파일을 찾을 수 없습니다: {pdf_path}")
 
         with pymupdf.open(pdf_path) as document:
+            self._embedded_title = (document.metadata or {}).get("title", "").strip()
             local_pages = [self._read_page(page) for page in document]
-            if not self.use_vision:
-                return [self._normalize(page) for page in local_pages]
-            if not is_available():
-                logger.log(LogCode.PAGE_VISION_UNAVAILABLE)
-                return [self._normalize(page) for page in local_pages]
+            content_pages = self._content_page_count(local_pages)
+            with_tables = content_pages <= MAX_PAGES_FOR_TABLES
+
+            if not self.use_vision or not is_available():
+                if not is_available():
+                    logger.log(LogCode.PAGE_VISION_UNAVAILABLE)
+                return [self._normalize(page) for page in local_pages], 0, with_tables
 
             dpi = int(NVIDIA_CONFIG.get("render_dpi", 150))
             images = [
@@ -359,26 +428,80 @@ class PaperExtractor:
                 for page in document
             ]
 
-        pages = self._read_pages_with_vision(images, local_pages)
-        return [self._normalize(page) for page in pages]
+        pages, n_vision = self._read_pages_with_vision(images, local_pages, with_tables)
+        return [self._normalize(page) for page in pages], n_vision, with_tables
 
-    def _read_pages_with_vision(self, images: list[str], local_pages: list[str]) -> list[str]:
+    @staticmethod
+    def _content_page_count(local_pages: list[str]) -> int:
+        """참고문헌을 뺀 본문 쪽 수.
+
+        참고문헌이 시작되는 쪽부터는 본문으로 세지 않는다. 논문 뒤쪽의 참고문헌은
+        몇 쪽씩 차지하면서도 표·그림 판단과는 무관하기 때문이다.
+
+        "References" 제목을 찾거나, 제목 없이 ``[1]`` 부터 나열하는 양식이면
+        인용 항목이 빽빽한 쪽을 경계로 본다.
+        """
+        for index, page in enumerate(local_pages):
+            if REFERENCE_PAGE_PATTERN.search(page):
+                return index
+            if len(CITATION_ENTRY_PATTERN.findall(page)) >= CITATION_ENTRIES_PER_PAGE:
+                return index
+        return len(local_pages)
+
+    @staticmethod
+    def _degeneration_reason(text: str, local_text: str) -> str:
+        """비전 판독이 망가졌으면 그 이유를, 멀쩡하면 빈 문자열을 돌려준다.
+
+        호출이 200으로 성공해도 모델이 반복 루프에 빠질 수 있다. 실제로 참고문헌
+        쪽에서 ``<unk>`` 를 만 자 넘게 뱉어 분량이 두 배가 된 적이 있다.
+        """
+        if not text.strip():
+            return "빈 응답"
+        if UNK_RUN_PATTERN.search(text):
+            return "<unk> 반복"
+        if REPEATED_RUN_PATTERN.search(text):
+            return "같은 조각 반복"
+        local_length = len(local_text.strip())
+        if local_length > 200 and len(text) > local_length * VISION_LENGTH_LIMIT:
+            return f"분량 과다 ({len(text)}자 vs 로컬 {local_length}자)"
+        return ""
+
+    def _read_pages_with_vision(
+        self, images: list[str], local_pages: list[str], with_tables: bool
+    ) -> tuple[list[str], int]:
         """쪽 이미지를 모델에 보내 마크다운으로 받는다.
 
         같은 지시문을 모든 쪽에 똑같이 적용하므로 어떤 논문을 넣어도 결과 형태가
         일정하다. 쪽은 서로 독립이라 몇 개씩 동시에 보내 시간을 줄이고,
         실패한 쪽만 로컬 추출 결과로 되돌린다.
+
+        (쪽별 결과, 비전으로 읽어낸 쪽 수) 를 돌려준다. 쪽 수를 함께 남기는 이유는,
+        나중에 저장된 행만 보고도 어떤 방식으로 뽑았는지 알 수 있어야 하기 때문이다.
         """
 
-        def read_one(index: int) -> str:
+        prompt = VISION_PROMPT if with_tables else VISION_PROMPT_TEXT_ONLY
+
+        def read_one(index: int) -> tuple[str, bool]:
+            local = local_pages[index]
             try:
-                return describe_image(images[index], VISION_PROMPT, max_tokens=4096).strip()
+                # 폴백된 쪽은 수식·표 품질이 떨어지므로, 동시요청 제한(16/16)에 걸린 경우
+                # 잠시 기다렸다 더 끈질기게 다시 시도한다.
+                text = describe_image(
+                    images[index], prompt, max_tokens=4096, retries=4
+                ).strip()
             except NvidiaServiceError as exc:
                 logger.log(LogCode.PAGE_VISION_FALLBACK, page=index + 1, reason=str(exc)[:120])
-                return local_pages[index]
+                return local, False
+
+            flaw = self._degeneration_reason(text, local)
+            if flaw:
+                logger.log(LogCode.PAGE_VISION_FALLBACK, page=index + 1, reason=flaw)
+                return local, False
+            return text, True
 
         with ThreadPoolExecutor(max_workers=self.vision_workers) as pool:
-            return list(pool.map(read_one, range(len(images))))
+            outcomes = list(pool.map(read_one, range(len(images))))
+        return [text for text, _ in outcomes], sum(1 for _, ok in outcomes if ok)
 
     @staticmethod
     def _render_table(table) -> str:
@@ -594,8 +717,13 @@ class PaperExtractor:
 
         return re.sub(r"([A-Za-z][A-Za-z-]*)-\s+([A-Za-z]\w*)", replace, text)
 
-    def _refine_page(self, page: str, running: set[str]) -> str:
-        """한 쪽을 읽을 만한 마크다운으로 정리한다."""
+    def _refine_page(self, page: str, running: set[str], with_tables: bool = True) -> str:
+        """한 쪽을 읽을 만한 마크다운으로 정리한다.
+
+        ``with_tables`` 가 False 면 표와 그림 캡션을 모두 버리고 본문만 남긴다.
+        비전 지시문에서도 걸러내지만, 로컬 추출로 되돌아온 쪽이 섞일 수 있어
+        여기서 한 번 더 거른다.
+        """
         refined: list[str] = []
         paragraph_lines: list[str] = []
         table_rows: list[str] = []
@@ -627,7 +755,8 @@ class PaperExtractor:
             # 마크다운 표는 줄 구조가 곧 의미다. 문단으로 합치면 표가 깨진다.
             if stripped.startswith("|"):
                 flush_paragraph()
-                table_rows.append(stripped)
+                if with_tables:
+                    table_rows.append(stripped)
                 continue
             flush_table()
 
@@ -644,7 +773,8 @@ class PaperExtractor:
             if CAPTION_PATTERN.match(stripped):
                 flush_paragraph()
                 # 그림 자체는 버리고 캡션만 인용구로 남겨 맥락을 유지한다.
-                refined.append(f"> **{stripped}**")
+                if with_tables:
+                    refined.append(f"> **{stripped}**")
                 continue
 
             paragraph_lines.append(stripped)
@@ -652,10 +782,10 @@ class PaperExtractor:
         flush_all()
         return "\n\n".join(refined)
 
-    def _refine(self, pages: list[str]) -> str:
+    def _refine(self, pages: list[str], with_tables: bool = True) -> str:
         """모든 쪽에 같은 규칙을 적용해 하나의 마크다운으로 합친다."""
         running = self._running_lines(pages)
-        refined = [self._refine_page(page, running) for page in pages]
+        refined = [self._refine_page(page, running, with_tables) for page in pages]
         return "\n\n".join(part for part in refined if part.strip())
 
     # ── 저장 ────────────────────────────────────────────────────────
@@ -672,6 +802,7 @@ class PaperExtractor:
                     content    TEXT,
                     n_pages    INTEGER,
                     n_chars    INTEGER,
+                    extractor  TEXT,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
                 """
@@ -699,8 +830,8 @@ class PaperExtractor:
         with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.execute(
                 "INSERT OR REPLACE INTO extracted "
-                "(id, title, source_pdf, content, n_pages, n_chars, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                "(id, title, source_pdf, content, n_pages, n_chars, extractor, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
                 (
                     result.id,
                     result.title,
@@ -708,6 +839,7 @@ class PaperExtractor:
                     result.content,
                     result.n_pages,
                     result.n_chars,
+                    result.extractor,
                 ),
             )
         self._write_markdown(result)
