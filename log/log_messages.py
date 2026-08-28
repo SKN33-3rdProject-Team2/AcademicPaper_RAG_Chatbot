@@ -26,6 +26,11 @@ LOG_MESSAGES: dict[LogCode, dict[str, str]] = {
         "event": "ollama_generation_failed",
         "message": "Ollama 응답 생성 요청에 실패했습니다.",
     },
+    LogCode.OLLAMA_CONFIG_LOAD_FAILED: {
+        "level": "ERROR",
+        "event": "ollama_config_load_failed",
+        "message": "Ollama 설정 파일을 불러오지 못했습니다.",
+    },
     LogCode.KEYWORD_GENERATION_STARTED: {
         "level": "INFO",
         "event": "keyword_generation_started",
@@ -45,5 +50,10 @@ LOG_MESSAGES: dict[LogCode, dict[str, str]] = {
         "level": "WARNING",
         "event": "keyword_generation_rejected",
         "message": "검색어가 비어 있어 키워드 생성을 시작하지 않았습니다.",
+    },
+    LogCode.KEYWORD_GENERATION_FAILED: {
+        "level": "ERROR",
+        "event": "keyword_generation_failed",
+        "message": "Ollama가 중복 없는 유효한 학술 검색 키워드 6개를 반환하지 않았습니다.",
     },
 }

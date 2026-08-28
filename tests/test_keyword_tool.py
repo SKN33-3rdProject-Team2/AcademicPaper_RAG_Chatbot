@@ -4,12 +4,8 @@ from __future__ import annotations
 
 import sys
 import unittest
-from pathlib import Path
 
-# 직접 실행(`python tests/test_keyword_tool.py`)할 때도 프로젝트 모듈을 찾도록 한다.
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+from tests import PROJECT_ROOT, SRC_DIR
 
 from tools.keyword_tool import generate_arxiv_keywords
 
