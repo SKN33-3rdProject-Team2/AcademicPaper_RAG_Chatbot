@@ -47,18 +47,27 @@ def parse_initial_intent(user_input: str) -> dict:
 
 
 class UserInteractionIntent(BaseModel):
-    action: str = Field(description="'download'(PDF 다운로드), 'translate'(초록 번역), 'cancel'(취소/종료) 중 하나", default="cancel")
+    action: str = Field(
+        description="'download'(PDF 다운로드), 'translate'(초록 번역), 'search'(새로운 검색/필터), 'cancel'(취소/종료) 중 하나",
+        default="cancel")
     selected_numbers: List[int] = Field(description="대상 논문의 번호 리스트", default_factory=list)
+    search_keyword: str = Field(description="새로 검색하고자 하는 키워드 또는 주제 (search 액션일 때 필수)", default="")
 
 
 def parse_user_interaction(user_input: str, total_count: int) -> dict:
     structured_llm = ChatOpenAI(model=OPENAI_CHAT_MODEL, temperature=0).with_structured_output(UserInteractionIntent)
-    prompt = (f"다음 응답에서 의도를 분석해줘. 논문은 총 {total_count}개야. "
-              f"전부/다 라고 하면 1부터 {total_count}까지 채움\n응답: {user_input}")
+    prompt = (
+        f"다음 응답에서 사용자의 의도를 분석해줘. 현재 보여진 논문은 총 {total_count}개야.\n"
+        f"- 'download': PDF 다운로드 (예: '1번 다운', '모두 다')\n"
+        f"- 'translate': 초록 번역 (예: '2번 요약 번역')\n"
+        f"- 'search': 사용자가 현재 목록과 무관하게 새로운 주제나 키워드로 다시 찾아달라고 할 때 (예: 'Attention 관련만 다시 찾아줘', 'RAG 논문 검색해줘')\n"
+        f"- 'cancel': 단순 엔터나 종료/뒤로가기\n"
+        f"응답: {user_input}"
+    )
     try:
         return structured_llm.invoke(prompt).model_dump()
     except Exception:
-        return {"action": "cancel", "selected_numbers": []}
+        return {"action": "cancel", "selected_numbers": [], "search_keyword": ""}
 
 
 class LocalLibraryBot:
@@ -189,75 +198,106 @@ class LocalLibraryBot:
         print(f"📚 내 서재(Local JSON/DB) 관리 챗봇 (Model: {OPENAI_CHAT_MODEL})")
         print("=" * 50)
 
+        # 초기 실행 플래그 및 현재 검색된 papers를 관리하기 위한 변수
+        current_papers = []
+        current_intent = "search"
+        current_keyword = ""
+
         while True:
-            try:
-                user_input = input("\n[내 서재] 무엇을 도와드릴까요?\n(예: '저장된 리스트 보여줘', 'Attention 논문 찾아줘', '현재 있는거 다 다운해줘'): ")
-            except KeyboardInterrupt:
-                print("\n\n[System] 프로그램을 안전하게 종료합니다.")
-                break
-
-            if not user_input.strip(): continue
-
-            user_lower = user_input.lower()
-            is_explicit_exit = any(k == user_lower.strip() for k in ["종료", "그만", "q", "quit", "exit"]) or any(
-                k in user_lower for k in ["종료해", "프로그램 종료", "그만", "중지", "멈춰", "q", "quit", "exit", "안해", "그만할래"])
-            if is_explicit_exit and not any(w in user_lower for w in ["다운", "받", "저장", "번", "모두", "다", "찾아"]):
-                print("\n[System] 서재 챗봇을 종료합니다.")
-                break
-
-            intent_data = parse_initial_intent(user_input)
-            intent = intent_data.get("intent")
-            keyword = intent_data.get("search_keyword", "")
-            wants_download = intent_data.get("wants_download", False)
-
-            if intent == "exit": print("\n[System] 서재 챗봇을 종료합니다."); break
-
-            matched_ids = self.get_all_json_ids() if intent in ["show_all", "download_all"] else self.search_json(
-                keyword if keyword.strip() else user_input)
-
-            if not matched_ids:
-                print(f"\n[System] ❌ 내 서재에 일치하는 논문이 없습니다.\n💡 안내: 외부 검색 봇('search.py')을 통해 먼저 검색/저장을 진행해 주세요.")
-                continue
-
-            papers = self.fetch_full_data_from_db(matched_ids)
-
-            if wants_download or intent == "download_all":
-                print(f"\n[System] 📚 조건에 맞는 총 {len(papers)}개의 논문을 바로 다운로드합니다.")
-                self.process_downloads(papers)
-                continue
-
-            while True:
-                print(f"\n[System] 📚 내 서재에서 총 {len(papers)}개의 논문을 찾았습니다.")
-                print("-" * 60)
-                for idx, p in enumerate(papers):
-                    if intent == "show_all" and not keyword.strip():
-                        print(f"{idx + 1}. [{p['id']}] {p['title']}")
-                    else:
-                        print(f"{idx + 1}. [{p['id']}] {p['title']}\n   - 저자: {p['authors']}\n   - 요약: {p['summary']}")
-                    print("-" * 60)
-
+            if not current_papers:
                 try:
-                    ans = input(
-                        "\n[선택]\n - PDF 다운로드 (예: '1번 다운', '모두 다운')\n - 초록 번역 (예: '2번 요약 번역')\n - 종료/뒤로가기 (엔터)\n> ")
+                    user_input = input(
+                        "\n[내 서재] 무엇을 도와드릴까요?\n(예: '저장된 리스트 보여줘', 'Attention 논문 찾아줘', '현재 있는거 다 다운해줘'): ")
                 except KeyboardInterrupt:
-                    print("\n[System] 이전 메뉴로 돌아갑니다.");
+                    print("\n\n[System] 프로그램을 안전하게 종료합니다.")
                     break
 
-                if not ans.strip(): break
-                action_data = parse_user_interaction(ans, len(papers))
+                if not user_input.strip(): continue
 
-                if action_data.get("action") == "translate" and action_data.get("selected_numbers"):
-                    for num in action_data["selected_numbers"]:
-                        if 0 <= num - 1 < len(papers):
-                            print(f"\n✨ 번역 중...\n{self.translate_summary(papers[num - 1]['summary'])}\n{'=' * 60}")
-                    input("\n[안내] 번역을 확인하셨습니다. 엔터를 누르면 리스트로 돌아갑니다.")
-                elif action_data.get("action") == "download" and action_data.get("selected_numbers"):
-                    self.process_downloads(
-                        [papers[n - 1] for n in action_data["selected_numbers"] if 0 <= n - 1 < len(papers)])
+                user_lower = user_input.lower()
+                is_explicit_exit = any(k == user_lower.strip() for k in ["종료", "그만", "q", "quit", "exit"]) or any(
+                    k in user_lower for k in ["종료해", "프로그램 종료", "그만", "중지", "멈춰", "q", "quit", "exit", "안해", "그만할래"])
+                if is_explicit_exit and not any(w in user_lower for w in ["다운", "받", "저장", "번", "모두", "다", "찾아"]):
+                    print("\n[System] 서재 챗봇을 종료합니다.")
                     break
+
+                intent_data = parse_initial_intent(user_input)
+                current_intent = intent_data.get("intent")
+                current_keyword = intent_data.get("search_keyword", "")
+                wants_download = intent_data.get("wants_download", False)
+
+                if current_intent == "exit": print("\n[System] 서재 챗봇을 종료합니다."); break
+
+                matched_ids = self.get_all_json_ids() if current_intent in ["show_all",
+                                                                            "download_all"] else self.search_json(
+                    current_keyword if current_keyword.strip() else user_input)
+
+                if not matched_ids:
+                    query_display = current_keyword if current_keyword.strip() else user_input
+                    print(
+                        f"\n[System] ❌ 내 서재에 '{query_display}'와(과) 일치하는 논문이 없습니다.\n💡 안내: 외부 검색 봇('search.py')을 통해 먼저 검색/저장을 진행해 주세요.")
+                    continue
+
+                current_papers = self.fetch_full_data_from_db(matched_ids)
+
+                if wants_download or current_intent == "download_all":
+                    print(f"\n[System] 📚 조건에 맞는 총 {len(current_papers)}개의 논문을 바로 다운로드합니다.")
+                    self.process_downloads(current_papers)
+                    current_papers = []  # 다운로드 완료 후 초기 화면으로 리셋
+                    continue
+
+            # 💡 리스트 출력 및 사용자 인터렉션 루프
+            print(f"\n[System] 📚 내 서재에서 총 {len(current_papers)}개의 논문을 찾았습니다.")
+            print("-" * 60)
+            for idx, p in enumerate(current_papers):
+                if current_intent == "show_all" and not current_keyword.strip():
+                    print(f"{idx + 1}. [{p['id']}] {p['title']}")
                 else:
-                    print("\n[System] 작업을 건너뜁니다.");
-                    break
+                    print(f"{idx + 1}. [{p['id']}] {p['title']}\n   - 저자: {p['authors']}\n   - 요약: {p['summary']}")
+                print("-" * 60)
+
+            try:
+                ans = input(
+                    "\n[선택]\n - PDF 다운로드 (예: '1번 다운', '모두 다운')\n - 초록 번역 (예: '2번 요약 번역')\n - 다른 주제 검색 (예: 'Attention 관련만 찾아줘')\n - 종료/뒤로가기 (엔터)\n> ")
+            except KeyboardInterrupt:
+                print("\n[System] 초기 화면으로 돌아갑니다.")
+                current_papers = []
+                continue
+
+            if not ans.strip():
+                current_papers = []  # 엔터 입력 시 리스트 초기화 후 첫 화면으로
+                continue
+
+            action_data = parse_user_interaction(ans, len(current_papers))
+            action = action_data.get("action")
+
+            # 💡 [신규 기능] 리스트 화면에서 곧바로 새로운 검색을 요구한 경우
+            if action == "search" or (
+                    not action_data.get("selected_numbers") and action == "cancel" and len(ans.strip()) > 2):
+                new_query = action_data.get("search_keyword") or ans.strip()
+                print(f"\n[System] 🔍 '{new_query}' 키워드로 서재 내에서 다시 검색합니다...")
+                matched_ids = self.search_json(new_query)
+                if matched_ids:
+                    current_papers = self.fetch_full_data_from_db(matched_ids)
+                    current_intent = "search"
+                    current_keyword = new_query
+                    continue
+                else:
+                    print(f"\n[System] ❌ '{new_query}'와(과) 일치하는 논문을 찾지 못했습니다. 기존 목록을 유지합니다.")
+                    continue
+
+            if action == "translate" and action_data.get("selected_numbers"):
+                for num in action_data["selected_numbers"]:
+                    if 0 <= num - 1 < len(current_papers):
+                        print(f"\n✨ 번역 중...\n{self.translate_summary(current_papers[num - 1]['summary'])}\n{'=' * 60}")
+                input("\n[안내] 번역을 확인하셨습니다. 엔터를 누르면 리스트로 돌아갑니다.")
+            elif action == "download" and action_data.get("selected_numbers"):
+                self.process_downloads([current_papers[n - 1] for n in action_data["selected_numbers"] if
+                                        0 <= n - 1 < len(current_papers)])
+                current_papers = []
+            else:
+                print("\n[System] 초기 화면으로 돌아갑니다.")
+                current_papers = []
 
 
 if __name__ == "__main__":
