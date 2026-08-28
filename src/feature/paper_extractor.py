@@ -85,6 +85,8 @@ SUBSCRIPT_MAX_CHARS = 12
 # 적분·합 기호처럼 드물면서 유독 큰 글리프를 본문 크기 후보에서 걸러내는 기준.
 OVERSIZED_GLYPH_SHARE = 0.05
 OVERSIZED_GLYPH_RATIO = 1.4
+# 표 탐지가 빈 격자를 물어오는 일이 있어, 이 비율 이상 칸이 차 있어야 표로 인정한다.
+TABLE_MIN_FILLED_RATIO = 0.4
 
 
 class PaperExtractionError(RuntimeError):
@@ -279,8 +281,31 @@ class PaperExtractor:
                 ) from exc
         return pymupdf
 
+    @staticmethod
+    def _table_is_useful(table) -> bool:
+        """표 탐지는 빈 격자를 잡아내기도 한다. 알맹이가 있는 것만 쓴다."""
+        try:
+            rows = table.extract()
+        except Exception:
+            return False
+        if len(rows) < 2 or table.col_count < 2:
+            return False
+        cells = [cell for row in rows for cell in row]
+        if not cells:
+            return False
+        filled = sum(1 for cell in cells if cell and str(cell).strip())
+        return filled / len(cells) >= TABLE_MIN_FILLED_RATIO
+
     def _read_pdf(self, pdf_path: Path) -> list[str]:
-        """페이지별 텍스트를 뽑는다. 그림은 버리고, 위·아래 첨자는 살려 낸다."""
+        """페이지별 텍스트를 뽑는다.
+
+        표는 PyMuPDF 의 표 탐지로 마크다운 표로 살리고, 나머지 본문은 span 단위로
+        읽어 위·아래 첨자를 되살린다. 그림은 버린다.
+
+        표 탐지와 첨자 복원을 함께 쓰는 이유는 어느 한쪽만으로는 부족해서다.
+        pymupdf4llm 은 표를 잘 뽑지만 아래첨자를 통째로 잃고(``∇_θΦ_a`` 가
+        ``_∇θ_ Φ _a_`` 가 된다), span 단위 추출만으로는 표가 세로로 흩어진다.
+        """
         pymupdf = self._import_pymupdf()
         if not pdf_path.is_file():
             raise PaperExtractionError(f"PDF 파일을 찾을 수 없습니다: {pdf_path}")
@@ -288,17 +313,62 @@ class PaperExtractor:
         pages: list[str] = []
         with pymupdf.open(pdf_path) as document:
             for page in document:
-                blocks = page.get_text("dict").get("blocks", [])
-                lines: list[str] = []
-                for block in blocks:
-                    if block.get("type") != 0:  # 0 = 텍스트, 1 = 이미지 → 그림은 버린다
-                        continue
-                    for line in block.get("lines", []):
-                        rendered = self._render_line(line.get("spans", []))
-                        if rendered.strip():
-                            lines.append(rendered)
-                pages.append(self._normalize("\n".join(lines)))
+                pages.append(self._normalize(self._read_page(page)))
         return pages
+
+    @staticmethod
+    def _render_table(table) -> str:
+        """표를 마크다운으로 옮긴다.
+
+        칸 내용은 PyMuPDF 의 ``to_markdown()`` 을 그대로 쓴다. ``extract()`` 로 직접
+        조립해 보면 칸 안의 순서가 흐트러져 ``1(0,∞)(x)`` 가 ``1 (x) (0,∞)`` 가 된다.
+
+        이탤릭 ``_..._`` 는 지운다. 본문에서 아래첨자로 쓰는 ``_{...}`` 와 생김새가
+        겹쳐, 그대로 두면 ``max_{_0_, x}_`` 처럼 엉키기 때문이다.
+
+        남는 한계: 칸 안에 ``|`` 가 있으면(예: 절댓값 ``1+|x|``) 그 줄만 열 수가
+        어긋난다. 글자는 온전하고 그 줄에만 생기는 문제라 순서 보존을 택했다.
+        """
+        markdown = table.to_markdown().strip()
+        return markdown.replace("~~", "").replace("_", "")
+
+    def _read_page(self, page) -> str:
+        """한 쪽을 표와 본문으로 나눠 읽고, 원래 세로 순서대로 이어 붙인다."""
+        table_areas: list[tuple[float, float, float, str]] = []
+        try:
+            for table in page.find_tables().tables:
+                if not self._table_is_useful(table):
+                    continue
+                bbox = table.bbox
+                rendered = self._render_table(table)
+                if rendered:
+                    table_areas.append(
+                        (float(bbox[1]), float(bbox[3]), float(bbox[0]), rendered)
+                    )
+        except Exception:
+            table_areas = []  # 표 탐지는 보조 수단이라, 실패해도 본문은 계속 읽는다
+
+        pieces: list[tuple[float, str]] = [(top, markdown) for top, _, _, markdown in table_areas]
+
+        for block in page.get_text("dict").get("blocks", []):
+            if block.get("type") != 0:  # 0 = 텍스트, 1 = 이미지 → 그림은 버린다
+                continue
+            block_top = float(block["bbox"][1])
+            block_bottom = float(block["bbox"][3])
+            # 표 안에 있는 글자는 이미 표로 옮겼으므로 본문에서 뺀다.
+            if any(top <= block_top and block_bottom <= bottom for top, bottom, _, _ in table_areas):
+                continue
+
+            lines = [
+                rendered
+                for line in block.get("lines", [])
+                if (rendered := self._render_line(line.get("spans", []))).strip()
+            ]
+            if lines:
+                pieces.append((block_top, "\n".join(lines)))
+
+        pieces.sort(key=lambda item: item[0])
+        return "\n".join(text for _, text in pieces)
 
     @staticmethod
     def _render_line(spans: list[dict]) -> str:
@@ -461,42 +531,61 @@ class PaperExtractor:
         return re.sub(r"([A-Za-z][A-Za-z-]*)-\s+([A-Za-z]\w*)", replace, text)
 
     def _refine_page(self, page: str, running: set[str]) -> str:
-        """한 쪽을 읽을 만한 마크다운 문단으로 정리한다."""
+        """한 쪽을 읽을 만한 마크다운으로 정리한다."""
         refined: list[str] = []
-        buffer: list[str] = []
+        paragraph_lines: list[str] = []
+        table_rows: list[str] = []
 
-        def flush() -> None:
-            if not buffer:
+        def flush_paragraph() -> None:
+            if not paragraph_lines:
                 return
-            paragraph = self._join_hyphenation(" ".join(buffer))
+            paragraph = self._join_hyphenation(" ".join(paragraph_lines))
             paragraph = re.sub(r"\s{2,}", " ", paragraph).strip()
             if paragraph:
                 refined.append(paragraph)
-            buffer.clear()
+            paragraph_lines.clear()
+
+        def flush_table() -> None:
+            # 표는 줄바꿈 하나로 이어져야 한 덩어리로 읽힌다. 빈 줄이 끼면 깨진다.
+            if table_rows:
+                refined.append("\n".join(table_rows))
+                table_rows.clear()
+
+        def flush_all() -> None:
+            flush_paragraph()
+            flush_table()
 
         for line in page.splitlines():
             if self._is_noise(line, running):
                 continue
             stripped = line.strip()
+
+            # 마크다운 표는 줄 구조가 곧 의미다. 문단으로 합치면 표가 깨진다.
+            if stripped.startswith("|"):
+                flush_paragraph()
+                table_rows.append(stripped)
+                continue
+            flush_table()
+
             if not stripped:
-                flush()
+                flush_paragraph()
                 continue
 
             heading = self._as_heading(stripped)
             if heading:
-                flush()
+                flush_paragraph()
                 refined.append(heading)
                 continue
 
             if CAPTION_PATTERN.match(stripped):
-                flush()
+                flush_paragraph()
                 # 그림 자체는 버리고 캡션만 인용구로 남겨 맥락을 유지한다.
                 refined.append(f"> **{stripped}**")
                 continue
 
-            buffer.append(stripped)
+            paragraph_lines.append(stripped)
 
-        flush()
+        flush_all()
         return "\n\n".join(refined)
 
     def _refine(self, pages: list[str]) -> str:
