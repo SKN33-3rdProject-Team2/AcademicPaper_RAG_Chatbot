@@ -32,7 +32,7 @@ import sys
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 # ---------------------------------------------------------------------
@@ -479,11 +479,7 @@ class PaperExtractor:
         if not ref.from_metadata and self._embedded_title:
             title = self._embedded_title
 
-        # 절 이름은 논문마다 제각각이라, 표준 골격에 맞추는 일은 모델에게 맡긴다.
-        mapping = self._classify_sections(title, sections)
-        columns, others = self._to_imrad(sections, mapping)
-
-        result = ExtractionResult(
+        extracted = ExtractionResult(
             id=ref.id,
             title=title,
             source_pdf=ref.pdf_path.name,
@@ -491,9 +487,17 @@ class PaperExtractor:
             n_pages=len(pages),
             n_vision_pages=n_vision,
             sections=sections,
-            columns=columns,
-            others=others,
         )
+
+        # 마크다운을 먼저 쓴다. 뒤이은 분류는 모델을 부르므로 실패하거나 오래 걸릴 수
+        # 있는데, 추출한 본문 자체는 그것과 무관하게 이미 완성돼 있다.
+        self._write_markdown(extracted)
+
+        # 절 이름은 논문마다 제각각이라, 표준 골격에 맞추는 일은 모델에게 맡긴다.
+        mapping = self._classify_sections(title, sections)
+        columns, others = self._to_imrad(sections, mapping)
+        result = replace(extracted, columns=columns, others=others)
+
         self._save(result)
         logger.log(
             LogCode.PAPER_EXTRACTION_SUCCEEDED,
@@ -1297,7 +1301,11 @@ class PaperExtractor:
         return self.output_dir / f"{paper_id}.md"
 
     def _write_markdown(self, result: ExtractionResult) -> Path:
-        """가공본을 마크다운 파일로도 떨어뜨린다. 앞머리에 출처를 적어 둔다."""
+        """가공본을 마크다운 파일로도 떨어뜨린다. 앞머리에 출처를 적어 둔다.
+
+        DB보다 먼저 불릴 수 있으므로 폴더는 여기서도 만든다.
+        """
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         path = self.markdown_path(result.id)
         header = (
             f"# {result.title}\n\n"
@@ -1309,7 +1317,10 @@ class PaperExtractor:
         return path
 
     def _save(self, result: ExtractionResult) -> None:
-        """가공본을 DB에 넣고, 제목 목록 JSON과 마크다운 파일을 함께 갱신한다."""
+        """가공본을 DB에 넣고 제목 목록 JSON 을 갱신한다.
+
+        마크다운은 추출 직후에 이미 써 두었으므로 여기서 다시 쓰지 않는다.
+        """
         self._init_db()
         with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.execute(
@@ -1330,7 +1341,6 @@ class PaperExtractor:
                     result.extractor,
                 ),
             )
-        self._write_markdown(result)
         self._rebuild_json()
 
     def _rebuild_json(self) -> None:

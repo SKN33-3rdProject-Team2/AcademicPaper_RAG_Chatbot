@@ -318,9 +318,10 @@ class StorageTest(unittest.TestCase):
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM extracted").fetchone()[0], 1)
 
     def test_markdown_file_is_written(self):
+        """마크다운은 DB보다 먼저 쓰이므로, 폴더가 없어도 혼자 만들 수 있어야 한다."""
         with tempfile.TemporaryDirectory() as directory:
             extractor = self._extractor(directory)
-            extractor._save(
+            extractor._write_markdown(
                 ExtractionResult(
                     id="1234v1",
                     title="어떤 논문",
