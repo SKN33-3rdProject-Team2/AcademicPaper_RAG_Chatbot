@@ -1,0 +1,23 @@
+"""프로젝트 공통 로그 코드 번호 정의."""
+
+from __future__ import annotations
+
+from enum import IntEnum
+
+
+class LogCode(IntEnum):
+    """기능별 로그 코드.
+
+    1xxx는 Ollama, 2xxx는 Keyword 기능을 나타낸다.
+    x1xx는 시작·상태, x2xx는 성공, x4xx는 입력 거부, x5xx는 오류다.
+    """
+
+    OLLAMA_CONNECTION_CHECKED = 1100
+    OLLAMA_GENERATION_SUCCEEDED = 1200
+    OLLAMA_CONNECTION_FAILED = 1500
+    OLLAMA_GENERATION_FAILED = 1501
+
+    KEYWORD_GENERATION_STARTED = 2100
+    KEYWORD_GENERATION_SUCCEEDED = 2200
+    KEYWORD_GENERATION_FALLBACK = 2300
+    KEYWORD_GENERATION_REJECTED = 2400

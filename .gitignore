@@ -19,3 +19,7 @@ __pycache__/
 # dotenv 무시 설정
 .env
 
+# 로컬 실행 로그 (`Log` 패키지의 Python 코드는 포함)
+Log/*.log
+Log/*.log.*
+

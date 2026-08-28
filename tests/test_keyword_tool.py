@@ -11,7 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from tools.keyword_tool import KeywordTool
+from tools.keyword_tool import generate_arxiv_keywords
 
 
 # 실제 Ollama 키워드 생성을 확인할 사용자 입력. 원하는 주제로 이 값만 바꾼다.
@@ -21,7 +21,7 @@ USER_PROMPT = "LLM을 활용한 논문들이 뭐가 있는지 찾아줘"
 class KeywordToolTest(unittest.TestCase):
     def test_generates_keywords_with_user_prompt(self):
         """테스트 파일 상단의 사용자 입력으로 실제 Ollama 키워드를 생성한다."""
-        result = KeywordTool().generate_keywords(USER_PROMPT)
+        result = generate_arxiv_keywords.invoke({"user_query": USER_PROMPT})
 
         self.assertEqual(len(result["keywords"]), 6)
         self.assertTrue(all(isinstance(keyword, str) and keyword for keyword in result["keywords"]))
