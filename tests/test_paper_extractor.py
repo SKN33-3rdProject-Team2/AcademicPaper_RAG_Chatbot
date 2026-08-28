@@ -275,6 +275,42 @@ class SectionLabelTest(unittest.TestCase):
         )
 
 
+class ReferenceListTest(unittest.TestCase):
+    """참고문헌 구역에서 인용 항목만 골라내는 부분."""
+
+    CONTENT = "\n\n".join(
+        (
+            "## 6 Conclusion",
+            "This paper introduces PyThaiNLP.",
+            "## References",
+            "Rami Al-Rfou. 2015. Polyglot. Available at https://pypi.org/project/polyglot/.",
+            "<sup>28</sup>Some phonetic algorithm relies on syllable tokenization",
+            "Dimo Angelov. 2020. Top2Vec: Distributed representations of topics.",
+            "12",
+            "## A Appendix",
+            "부록 본문은 참고문헌이 아니다. 충분히 긴 문장으로 적어 둔다.",
+        )
+    )
+
+    def test_picks_citation_entries_only(self):
+        got = PaperExtractor._extract_references(self.CONTENT)
+        self.assertEqual(
+            got,
+            (
+                "Rami Al-Rfou. 2015. Polyglot. Available at https://pypi.org/project/polyglot/.",
+                "Dimo Angelov. 2020. Top2Vec: Distributed representations of topics.",
+            ),
+        )
+
+    def test_stops_at_the_next_section(self):
+        """참고문헌 뒤에 부록이 오는 양식에서 부록 본문을 삼키지 않는다."""
+        for entry in PaperExtractor._extract_references(self.CONTENT):
+            self.assertNotIn("부록 본문", entry)
+
+    def test_paper_without_references_gives_empty(self):
+        self.assertEqual(PaperExtractor._extract_references("## 1 Introduction\n\n본문"), ())
+
+
 class BoldHeadingTest(unittest.TestCase):
     """비전 모델이 굵은 글씨로 내놓는 표제도 절 구분에 잡혀야 한다."""
 
@@ -405,17 +441,43 @@ class StorageTest(unittest.TestCase):
             self.assertIn("- **쪽 수**: 3", written)
             self.assertTrue(written.rstrip().endswith("## Abstract\n\n본문"))
 
-    def test_json_holds_saved_pdf_titles(self):
+    def test_json_holds_titles_and_references(self):
+        """JSON은 제목과 참고문헌 목록을 싣는다. 원본 PDF명은 DB와 마크다운에 남는다."""
         with tempfile.TemporaryDirectory() as directory:
             extractor = self._extractor(directory)
             extractor._save(
                 ExtractionResult(
-                    id="1234v1", title="제목", source_pdf="paper.pdf", content="본문", n_pages=1
+                    id="1234v1",
+                    title="제목",
+                    source_pdf="paper.pdf",
+                    content="본문",
+                    n_pages=1,
+                    references=("Rami Al-Rfou. 2015. Polyglot.", "Dimo Angelov. 2020. Top2Vec."),
                 )
             )
             payload = json.loads(extractor.json_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["1234v1"]["title"], "제목")
-            self.assertEqual(payload["1234v1"]["source_pdf"], "paper.pdf")
+            self.assertNotIn("source_pdf", payload["1234v1"])
+            self.assertEqual(
+                payload["1234v1"]["reference_pdf"],
+                ["Rami Al-Rfou. 2015. Polyglot.", "Dimo Angelov. 2020. Top2Vec."],
+            )
+            # 원본 PDF명은 DB에 그대로 남아 있어야 한다
+            self.assertEqual(extractor.get("1234v1")["source_pdf"], "paper.pdf")
+
+    def test_json_survives_a_db_made_before_the_column_existed(self):
+        """옛 DB를 그대로 쓰는 팀원 쪽에서도 저장이 깨지지 않아야 한다."""
+        with tempfile.TemporaryDirectory() as directory:
+            extractor = self._extractor(directory)
+            extractor._init_db()
+            with closing(sqlite3.connect(extractor.db_path)) as conn, conn:
+                conn.execute("ALTER TABLE extracted DROP COLUMN reference_pdf")
+            extractor._save(
+                ExtractionResult(id="9v1", title="옛것", source_pdf="a.pdf",
+                                 content="본문", n_pages=1, references=("A. 2020. B.",))
+            )
+            payload = json.loads(extractor.json_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["9v1"]["reference_pdf"], ["A. 2020. B."])
 
     def test_missing_metadata_db_is_reported(self):
         with tempfile.TemporaryDirectory() as directory:

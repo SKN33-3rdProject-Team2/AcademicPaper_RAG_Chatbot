@@ -123,6 +123,14 @@ REFERENCE_PAGE_PATTERN = re.compile(
 CITATION_ENTRY_PATTERN = re.compile(r"^\s*\[\d{1,3}\]\s", re.MULTILINE)
 CITATION_ENTRIES_PER_PAGE = 5
 
+# 가공된 본문에서 참고문헌 구역이 시작되는 자리. 위의 REFERENCE_PAGE_PATTERN 은 원본
+# 쪽글에 쓰고, 이쪽은 이미 헤딩으로 승격된 "## References" 를 찾는다.
+REFERENCE_SECTION_PATTERN = re.compile(
+    r"^#{1,6}\s+(?:references|bibliography)\s*$", re.IGNORECASE | re.MULTILINE
+)
+# 이보다 짧은 조각은 인용 항목으로 보지 않는다. 쪽번호나 잘린 줄이 걸린다.
+MIN_REFERENCE_LENGTH = 25
+
 # 어떤 논문을 넣어도 같은 모양으로 나오게 하는 지시문. 일관성의 핵심 손잡이다.
 VISION_PROMPT = (
     "Transcribe this page of an academic paper as GitHub-flavored Markdown.\n"
@@ -312,6 +320,7 @@ class ExtractionResult:
     sections: tuple[Section, ...] = ()
     columns: dict = field(default_factory=dict)   # IMRaD 컬럼별 본문
     others: dict = field(default_factory=dict)    # 표준 구분에 없던 절
+    references: tuple = ()                        # 참고문헌 항목 목록
 
     @property
     def n_chars(self) -> int:
@@ -448,6 +457,7 @@ class PaperExtractor:
                 title=record.get("title", ""),
                 source_pdf=record.get("source_pdf", ""),
                 content=record.get("content", ""),
+                references=tuple(json.loads(record.get("reference_pdf") or "[]")),
                 n_pages=int(record.get("n_pages") or 0),
                 n_vision_pages=int(record.get("n_pages") or 0)
                 if str(record.get("extractor", "")).startswith("vision")
@@ -487,6 +497,7 @@ class PaperExtractor:
             n_pages=len(pages),
             n_vision_pages=n_vision,
             sections=sections,
+            references=self._extract_references(content),
         )
 
         # 마크다운을 먼저 쓴다. 뒤이은 분류는 모델을 부르므로 실패하거나 오래 걸릴 수
@@ -1028,6 +1039,33 @@ class PaperExtractor:
         return pieces
 
     @staticmethod
+    def _extract_references(content: str) -> tuple[str, ...]:
+        """참고문헌 구역에서 인용 항목만 골라낸다.
+
+        절 컬럼에는 참고문헌을 담지 않지만(EXCLUDED_SECTION_TITLES), 목록 자체는
+        버리지 않는다. 뒤따르는 단계에서 인용된 논문을 따라 들어갈 실마리가 된다.
+
+        쪽 아래 각주가 같은 구역에 딸려 오므로(`<sup>28</sup>...`) 걸러낸다. 참고문헌
+        뒤에 부록이 오는 양식도 있어, 다음 헤딩을 만나면 거기서 멈춘다.
+        """
+        match = REFERENCE_SECTION_PATTERN.search(content)
+        if not match:
+            return ()
+
+        entries: list[str] = []
+        for block in content[match.end():].split("\n\n"):
+            block = block.strip()
+            if not block:
+                continue
+            if block.startswith("#"):
+                break                       # 부록 등 다음 절이 시작됐다
+            if block.startswith("<sup>"):
+                continue                    # 쪽 아래 각주
+            if len(block) >= MIN_REFERENCE_LENGTH:
+                entries.append(block)
+        return tuple(entries)
+
+    @staticmethod
     def _numbering_style(numbers: list[str]) -> str:
         """문서가 대단원에 어떤 번호 체계를 쓰는지 정한다. "arabic" | "roman" | "" 를 돌려준다.
 
@@ -1308,6 +1346,7 @@ class PaperExtractor:
                     result       TEXT,
                     conclusion   TEXT,
                     others       TEXT,
+                    reference_pdf TEXT,
                     content      TEXT,
                     n_pages      INTEGER,
                     n_chars      INTEGER,
@@ -1316,6 +1355,13 @@ class PaperExtractor:
                 )
                 """
             )
+            # CREATE TABLE IF NOT EXISTS 는 이미 있는 표에 컬럼을 더해주지 않는다.
+            # 앞서 만들어 둔 DB를 그대로 쓰는 팀원 쪽에서 저장이 깨지지 않도록,
+            # 없는 컬럼만 붙인다.
+            existing = {row[1] for row in conn.execute("PRAGMA table_info(extracted)")}
+            for column in ("reference_pdf",):
+                if column not in existing:
+                    conn.execute(f"ALTER TABLE extracted ADD COLUMN {column} TEXT")
 
     def markdown_path(self, paper_id: str) -> Path:
         """사람이 바로 열어볼 수 있는 마크다운 파일 경로."""
@@ -1347,15 +1393,16 @@ class PaperExtractor:
             conn.execute(
                 "INSERT OR REPLACE INTO extracted "
                 "(id, title, source_pdf, abstract, introduction, related_work, method, "
-                "experiment, result, conclusion, others, content, n_pages, n_chars, "
-                "extractor, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                "experiment, result, conclusion, others, reference_pdf, content, "
+                "n_pages, n_chars, extractor, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
                 (
                     result.id,
                     result.title,
                     result.source_pdf,
                     *[result.columns.get(name, "") for name in IMRAD_COLUMNS],
                     json.dumps(result.others, ensure_ascii=False),
+                    json.dumps(list(result.references), ensure_ascii=False),
                     result.content,
                     result.n_pages,
                     result.n_chars,
@@ -1365,13 +1412,23 @@ class PaperExtractor:
         self._rebuild_json()
 
     def _rebuild_json(self) -> None:
-        """DB를 원본으로 삼아 제목 목록 JSON을 통째로 다시 쓴다."""
+        """DB를 원본으로 삼아 제목 목록 JSON을 통째로 다시 쓴다.
+
+        원본 PDF 파일명은 DB와 마크다운 머리말에 남으므로 여기서는 싣지 않는다.
+        대신 그 논문이 인용한 문헌 목록을 실어, 뒤따르는 단계가 DB를 열지 않고도
+        인용 관계를 훑을 수 있게 한다.
+        """
         with closing(sqlite3.connect(self.db_path)) as conn:
             rows = conn.execute(
-                "SELECT id, title, source_pdf FROM extracted ORDER BY created_at DESC"
+                "SELECT id, title, reference_pdf FROM extracted ORDER BY created_at DESC"
             ).fetchall()
         payload = {
-            row[0]: {"id": row[0], "title": row[1], "source_pdf": row[2]} for row in rows
+            row[0]: {
+                "id": row[0],
+                "title": row[1],
+                "reference_pdf": json.loads(row[2] or "[]"),
+            }
+            for row in rows
         }
         self.json_path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=4), encoding="utf-8"
