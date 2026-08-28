@@ -164,6 +164,24 @@ class StorageTest(unittest.TestCase):
             with closing(sqlite3.connect(extractor.db_path)) as conn:
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM extracted").fetchone()[0], 1)
 
+    def test_markdown_file_is_written(self):
+        with tempfile.TemporaryDirectory() as directory:
+            extractor = self._extractor(directory)
+            extractor._save(
+                ExtractionResult(
+                    id="1234v1",
+                    title="어떤 논문",
+                    source_pdf="paper.pdf",
+                    content="## Abstract\n\n본문",
+                    n_pages=3,
+                )
+            )
+            written = extractor.markdown_path("1234v1").read_text(encoding="utf-8")
+            self.assertTrue(written.startswith("# 어떤 논문"))
+            self.assertIn("- **arXiv ID**: 1234v1", written)
+            self.assertIn("- **쪽 수**: 3", written)
+            self.assertTrue(written.rstrip().endswith("## Abstract\n\n본문"))
+
     def test_json_holds_saved_pdf_titles(self):
         with tempfile.TemporaryDirectory() as directory:
             extractor = self._extractor(directory)

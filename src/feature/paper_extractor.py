@@ -677,8 +677,24 @@ class PaperExtractor:
                 """
             )
 
+    def markdown_path(self, paper_id: str) -> Path:
+        """사람이 바로 열어볼 수 있는 마크다운 파일 경로."""
+        return self.output_dir / f"{paper_id}.md"
+
+    def _write_markdown(self, result: ExtractionResult) -> Path:
+        """가공본을 마크다운 파일로도 떨어뜨린다. 앞머리에 출처를 적어 둔다."""
+        path = self.markdown_path(result.id)
+        header = (
+            f"# {result.title}\n\n"
+            f"- **arXiv ID**: {result.id}\n"
+            f"- **원본 PDF**: {result.source_pdf}\n"
+            f"- **쪽 수**: {result.n_pages}\n\n---\n\n"
+        )
+        path.write_text(header + result.content, encoding="utf-8")
+        return path
+
     def _save(self, result: ExtractionResult) -> None:
-        """가공본을 DB에 넣고, 저장한 논문 제목 목록을 JSON으로 다시 쓴다."""
+        """가공본을 DB에 넣고, 제목 목록 JSON과 마크다운 파일을 함께 갱신한다."""
         self._init_db()
         with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.execute(
@@ -694,6 +710,7 @@ class PaperExtractor:
                     result.n_chars,
                 ),
             )
+        self._write_markdown(result)
         self._rebuild_json()
 
     def _rebuild_json(self) -> None:
