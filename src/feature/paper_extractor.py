@@ -32,7 +32,7 @@ import sys
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 # ---------------------------------------------------------------------
@@ -51,6 +51,7 @@ from log.log_codes import LogCode
 from services.nvidia_service import (
     NVIDIA_CONFIG,
     NvidiaServiceError,
+    chat,
     describe_image,
     is_available,
 )
@@ -122,6 +123,14 @@ REFERENCE_PAGE_PATTERN = re.compile(
 CITATION_ENTRY_PATTERN = re.compile(r"^\s*\[\d{1,3}\]\s", re.MULTILINE)
 CITATION_ENTRIES_PER_PAGE = 5
 
+# 가공된 본문에서 참고문헌 구역이 시작되는 자리. 위의 REFERENCE_PAGE_PATTERN 은 원본
+# 쪽글에 쓰고, 이쪽은 이미 헤딩으로 승격된 "## References" 를 찾는다.
+REFERENCE_SECTION_PATTERN = re.compile(
+    r"^#{1,6}\s+(?:references|bibliography)\s*$", re.IGNORECASE | re.MULTILINE
+)
+# 이보다 짧은 조각은 인용 항목으로 보지 않는다. 쪽번호나 잘린 줄이 걸린다.
+MIN_REFERENCE_LENGTH = 25
+
 # 어떤 논문을 넣어도 같은 모양으로 나오게 하는 지시문. 일관성의 핵심 손잡이다.
 VISION_PROMPT = (
     "Transcribe this page of an academic paper as GitHub-flavored Markdown.\n"
@@ -152,6 +161,99 @@ VISION_PROMPT_TEXT_ONLY = (
 )
 
 
+# 대단원 번호는 아라비아 숫자 한 단계(1, 2) 또는 로마 숫자(I, II)다.
+# "2.1" 처럼 점이 있으면 소단원이다.
+ARABIC_SECTION_NUMBER = re.compile(r"^\d+$")
+ROMAN_SECTION_NUMBER = re.compile(r"^[IVXLCDM]+$")
+# 로마 숫자로 읽히지만 소단원 글자로도 쓰이는 것들. C. Tasks 가 대단원으로 승격되던 원인이다.
+AMBIGUOUS_LETTERS = set("IVXLCDM")
+# 번호가 없어도 대단원인 절 이름들
+MAJOR_SECTION_TITLES = {
+    "abstract", "introduction", "background", "related work", "method", "methods",
+    "methodology", "approach", "experiments", "experimental setup", "results",
+    "results and analysis", "evaluation", "discussion", "conclusion", "conclusions",
+    "limitations", "acknowledgments", "acknowledgements", "appendix",
+}
+# 대단원으로 잡되 저장에서는 빼는 절
+EXCLUDED_SECTION_TITLES = {"references", "bibliography"}
+
+# IEEE·Springer 양식은 초록 표제를 본문 첫 줄에 붙여 쓴다.
+#   "**_Abstract_**--Recent advances in Large Language Models ..."
+# 독립된 줄이 아니라 헤딩으로 안 잡히고, 그러면 abstract 컬럼이 통째로 빈다.
+INLINE_ABSTRACT_PATTERN = re.compile(
+    r"^[*_\s]*(abstract|index terms|keywords)[*_\s]*[—–\-:]{1,3}\s*", re.IGNORECASE
+)
+# 폴백된 쪽에서는 절 표제가 문단 한가운데 섞인다.
+#   "... dependent on the model variant used. VI. CONCLUSION In this work, we ..."
+# 번호 + 온점 + 대문자 표제 다음에 보통 문장이 이어지는 자리를 경계로 본다.
+INLINE_SECTION_PATTERN = re.compile(
+    r"(?:(?<=\.)|(?<=^))\s*((?:[IVXLCDM]{1,5}|\d{1,2})\.)\s+([A-Z][A-Z][A-Z \-]{2,40}?)"
+    r"(?=\s+[A-Z][a-z])"
+)
+
+# 논문의 표준 골격(IMRaD). 어떤 논문이 와도 이 컬럼에 맞춰 저장한다.
+IMRAD_COLUMNS = (
+    "abstract",
+    "introduction",
+    "related_work",
+    "method",
+    "experiment",
+    "result",
+    "conclusion",
+)
+OTHERS_COLUMN = "others"
+
+# 모델 호출이 실패했을 때 쓰는 대비책. 절 이름에 이 낱말이 있으면 해당 구분으로 본다.
+SECTION_KEYWORDS = {
+    "abstract": ("abstract",),
+    "introduction": ("introduction", "motivation"),
+    "related_work": ("related work", "related research", "background", "prior work"),
+    "method": ("method", "approach", "model", "architecture", "framework", "algorithm",
+               "proposed", "theory", "formulation", "preliminaries"),
+    "experiment": ("experiment", "setup", "implementation", "dataset", "data",
+                   "simulation", "training", "evaluation protocol"),
+    "result": ("result", "analysis", "discussion", "evaluation", "ablation", "finding"),
+    "conclusion": ("conclusion", "summary", "future work", "outlook", "concluding"),
+}
+
+# 지시문은 영어로 쓴다. 판단 대상(영어 절 제목)과 출력(영어 식별자)이 모두 영어이고,
+# 활성 파라미터가 작은 모델일수록 영어 지시를 더 잘 따르기 때문이다.
+SECTION_CLASSIFY_SYSTEM_PROMPT = (
+    "You classify the structure of academic papers. Given the list of a paper's "
+    "top-level sections, decide what role each one plays in the paper.\n"
+    "[Categories]\n"
+    "- abstract: the paper's abstract\n"
+    "- introduction: background, motivation, the problem being solved\n"
+    "- related_work: survey of prior research\n"
+    "- method: the proposed technique, model, architecture, theory, or definitions\n"
+    "- experiment: experimental setup, datasets, implementation details, simulation procedure\n"
+    "- result: experimental results, analysis, discussion, ablations\n"
+    "- conclusion: conclusions, summary, future work\n"
+    "- others: none of the above (acknowledgements, appendix, data availability, "
+    "author contributions)\n"
+    "[Rules]\n"
+    "1. Judge by the role the section plays, not by its name. Papers name sections after "
+    "their own subject matter, so the name often differs from the standard one. "
+    "For example 'Original Beam Search' is method, and 'Direct Numerical Simulations' "
+    "is experiment.\n"
+    "2. When the title alone is ambiguous, use the opening sentence given with it.\n"
+    "3. Several sections may share one category. Papers often split the method across "
+    "multiple sections.\n"
+    "4. Do not force a fit. When you cannot tell, answer others.\n"
+    "5. Classify every section given. Never omit one.\n"
+    "6. Reply with JSON only, in the shape below. No preamble, no explanation, "
+    "no code fence. Use each section's heading exactly as it appears in the list.\n"
+    '{"section heading": "category", "section heading": "category"}'
+)
+
+# 절 번호 표기는 논문마다 다르다. "1 Introduction", "I. INTRODUCTION", "B. Trajectories"
+# 를 모두 (번호, 제목) 으로 나눈다. 글자 번호는 마침표를 요구해 "A Comparison of ..."
+# 같은 관사 시작 제목을 번호로 오인하지 않게 한다.
+SECTION_LABEL_PATTERN = re.compile(
+    r"^\s*(\d+(?:\.\d+)*\.?|[IVXLC]{1,5}\.|[A-Z]\.)\s+(\S.*)$"
+)
+
+
 class PaperExtractionError(RuntimeError):
     """논문 본문 추출을 완료하지 못했을 때 발생한다."""
 
@@ -163,6 +265,45 @@ class PaperRef:
     id: str
     title: str
     pdf_path: Path
+    # 메타데이터 DB에서 온 것인지. False 면 사용자가 직접 넣은 PDF 라 제목이 파일명이다.
+    from_metadata: bool = True
+
+
+@dataclass(frozen=True)
+class Section:
+    """논문의 대단원 하나. 심층 질의응답이 근거로 가리키는 단위다.
+
+    컬럼을 고정하지 않고 논문이 실제로 가진 대단원을 순서대로 담는다. 논문마다
+    절 이름이 달라(``5 Experiments`` vs ``I. INTRODUCTION``) 고정 컬럼으로는
+    담을 수 없기 때문이다. 소단원은 자기 대단원 안에 이어 붙이고,
+    참고문헌은 담지 않는다.
+    """
+
+    no: str                  # 절 번호 ("1", "I"). 없으면 빈 문자열
+    title: str               # 절 제목 ("Introduction")
+    pages: tuple[int, ...]   # 이 절이 걸쳐 있는 원본 쪽번호
+    text: str                # 절 본문 (소단원 포함)
+
+    @property
+    def n_chars(self) -> int:
+        return len(self.text)
+
+    def to_dict(self) -> dict:
+        return {
+            "no": self.no,
+            "title": self.title,
+            "pages": list(self.pages),
+            "text": self.text,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict) -> "Section":
+        return cls(
+            no=payload.get("no", ""),
+            title=payload.get("title", ""),
+            pages=tuple(payload.get("pages", ())),
+            text=payload.get("text", ""),
+        )
 
 
 @dataclass(frozen=True)
@@ -176,6 +317,10 @@ class ExtractionResult:
     n_pages: int
     n_vision_pages: int = 0
     skipped: bool = False
+    sections: tuple[Section, ...] = ()
+    columns: dict = field(default_factory=dict)   # IMRaD 컬럼별 본문
+    others: dict = field(default_factory=dict)    # 표준 구분에 없던 절
+    references: tuple = ()                        # 참고문헌 항목 목록
 
     @property
     def n_chars(self) -> int:
@@ -244,14 +389,19 @@ class PaperExtractor:
         for paper_id, title in rows:
             path = self.pdf_dir / f"{self.safe_title(title or '')}.pdf"
             if path.is_file():
-                by_path[path] = PaperRef(id=paper_id, title=title, pdf_path=path)
+                by_path[path] = PaperRef(
+                    id=paper_id, title=title, pdf_path=path, from_metadata=True
+                )
 
         # 사용자가 직접 넣어둔 PDF도 잡는다. Agent 1 을 거치지 않고 파일만 떨어뜨리는
         # 경우가 있고, 그때 파일명은 보통 arXiv id 다.
         if self.pdf_dir.is_dir():
             for path in sorted(self.pdf_dir.glob("*.pdf")):
                 by_path.setdefault(
-                    path, PaperRef(id=path.stem, title=path.stem, pdf_path=path)
+                    path,
+                    PaperRef(
+                        id=path.stem, title=path.stem, pdf_path=path, from_metadata=False
+                    ),
                 )
 
         refs = list(by_path.values())
@@ -307,6 +457,7 @@ class PaperExtractor:
                 title=record.get("title", ""),
                 source_pdf=record.get("source_pdf", ""),
                 content=record.get("content", ""),
+                references=tuple(json.loads(record.get("reference_pdf") or "[]")),
                 n_pages=int(record.get("n_pages") or 0),
                 n_vision_pages=int(record.get("n_pages") or 0)
                 if str(record.get("extractor", "")).startswith("vision")
@@ -323,26 +474,41 @@ class PaperExtractor:
         logger.log(LogCode.PAPER_EXTRACTION_STARTED, paper_id=paper_id, title=ref.title)
         try:
             pages, n_vision, with_tables = self._read_pdf(ref.pdf_path)
-            content = self._refine(pages, with_tables)
+            numbered = self._refine(pages, with_tables)
+            sections = self._build_sections(numbered)
+            content = "\n\n".join(text for _, text in numbered)
         except PaperExtractionError:
             raise
         except Exception as exc:
             logger.log(LogCode.PAPER_EXTRACTION_FAILED, paper_id=paper_id, reason=str(exc))
             raise PaperExtractionError(f"'{paper_id}' 추출에 실패했습니다: {exc}") from exc
 
-        # DB를 거치지 않은 PDF는 제목이 파일명이다. 파일에 든 제목이 있으면 그쪽이 낫다.
+        # DB를 거치지 않은 PDF는 제목이 파일명이다. 그때만 PDF 안에 든 제목을 쓴다.
+        # 제목과 파일명이 같다고 판단하면, 제목 그대로 저장된 PDF 에서 오판한다.
         title = ref.title
-        if title == ref.pdf_path.stem and self._embedded_title:
+        if not ref.from_metadata and self._embedded_title:
             title = self._embedded_title
 
-        result = ExtractionResult(
+        extracted = ExtractionResult(
             id=ref.id,
             title=title,
             source_pdf=ref.pdf_path.name,
             content=content,
             n_pages=len(pages),
             n_vision_pages=n_vision,
+            sections=sections,
+            references=self._extract_references(content),
         )
+
+        # 마크다운을 먼저 쓴다. 뒤이은 분류는 모델을 부르므로 실패하거나 오래 걸릴 수
+        # 있는데, 추출한 본문 자체는 그것과 무관하게 이미 완성돼 있다.
+        self._write_markdown(extracted)
+
+        # 절 이름은 논문마다 제각각이라, 표준 골격에 맞추는 일은 모델에게 맡긴다.
+        mapping = self._classify_sections(title, sections)
+        columns, others = self._to_imrad(sections, mapping)
+        result = replace(extracted, columns=columns, others=others)
+
         self._save(result)
         logger.log(
             LogCode.PAPER_EXTRACTION_SUCCEEDED,
@@ -504,6 +670,19 @@ class PaperExtractor:
 
         with ThreadPoolExecutor(max_workers=self.vision_workers) as pool:
             outcomes = list(pool.map(read_one, range(len(images))))
+
+        # 동시요청 제한에 걸려 밀린 쪽은 병렬로 다시 보내도 같은 자리에서 또 밀린다.
+        # 남은 쪽만 한 장씩 순서대로 보내면 제한에 걸리지 않아 대개 여기서 회복된다.
+        # 폴백된 쪽은 2단 조판이 뒤섞여 대단원 표제가 본문 문장 사이로 끼어들므로,
+        # 몇 초 더 쓰더라도 되살리는 편이 낫다. 전부 실패했다면 서비스가 내려간
+        # 것이라 보고 다시 훑지 않는다.
+        stalled = [index for index, (_, ok) in enumerate(outcomes) if not ok]
+        if stalled and len(stalled) < len(images):
+            for index in stalled:
+                text, ok = read_one(index)
+                if ok:
+                    outcomes[index] = (text, True)
+
         return [text for text, _ in outcomes], sum(1 for _, ok in outcomes if ok)
 
     @staticmethod
@@ -687,6 +866,14 @@ class PaperExtractor:
         stripped = line.strip()
         if not stripped or len(stripped) > 80:
             return None
+
+        # 비전 모델은 표제를 `**Abstract**` 처럼 굵은 글씨 한 줄로 내놓기도 한다.
+        # 강조 기호를 벗겨야 아는 표제로 알아보고, 벗긴 뒤에도 아래 검사들을
+        # 모두 통과해야 헤딩이 되므로 본문 강조가 표제로 둔갑하지는 않는다.
+        stripped = stripped.strip("*_ ").strip()
+        if not stripped:
+            return None
+
         if REFERENCE_HEADING_PATTERN.match(stripped):
             return "## References"
 
@@ -720,8 +907,10 @@ class PaperExtractor:
 
         return re.sub(r"([A-Za-z][A-Za-z-]*)-\s+([A-Za-z]\w*)", replace, text)
 
-    def _refine_page(self, page: str, running: set[str], with_tables: bool = True) -> str:
-        """한 쪽을 읽을 만한 마크다운으로 정리한다.
+    def _refine_page(
+        self, page: str, running: set[str], with_tables: bool = True
+    ) -> list[str]:
+        """한 쪽을 읽을 만한 마크다운 블록 목록으로 정리한다.
 
         ``with_tables`` 가 False 면 표와 그림 캡션을 모두 버리고 본문만 남긴다.
         비전 지시문에서도 걸러내지만, 로컬 추출로 되돌아온 쪽이 섞일 수 있어
@@ -737,7 +926,8 @@ class PaperExtractor:
             paragraph = self._join_hyphenation(" ".join(paragraph_lines))
             paragraph = re.sub(r"\s{2,}", " ", paragraph).strip()
             if paragraph:
-                refined.append(paragraph)
+                # 문단에 파묻힌 절 표제를 떼어낸다. 안 그러면 그 절이 앞 절에 흡수된다.
+                refined.extend(self._split_inline_headings(paragraph))
             paragraph_lines.clear()
 
         def flush_table() -> None:
@@ -783,13 +973,359 @@ class PaperExtractor:
             paragraph_lines.append(stripped)
 
         flush_all()
-        return "\n\n".join(refined)
+        return refined
 
-    def _refine(self, pages: list[str], with_tables: bool = True) -> str:
-        """모든 쪽에 같은 규칙을 적용해 하나의 마크다운으로 합친다."""
+    def _refine(self, pages: list[str], with_tables: bool = True) -> list[tuple[int, str]]:
+        """모든 쪽에 같은 규칙을 적용하고, 쪽번호를 붙인 블록 목록으로 돌려준다.
+
+        여기서 쪽번호를 잃으면 심층 질의응답이 "3페이지의 수식" 같은 질문에 근거를
+        짚을 수 없다. 하나의 마크다운으로 합치는 것은 호출한 쪽에서 한다.
+        """
         running = self._running_lines(pages)
-        refined = [self._refine_page(page, running, with_tables) for page in pages]
-        return "\n\n".join(part for part in refined if part.strip())
+        numbered: list[tuple[int, str]] = []
+        for page_number, page in enumerate(pages, start=1):
+            for block in self._refine_page(page, running, with_tables):
+                if block.strip():
+                    numbered.append((page_number, block.strip()))
+        return numbered
+
+    # ── 대단원 스키마 ────────────────────────────────────────────────
+
+    @staticmethod
+    def _is_heading(text: str) -> bool:
+        first = text.lstrip().splitlines()[0] if text.strip() else ""
+        return first.startswith("#")
+
+    @staticmethod
+    def _split_section_label(heading_text: str) -> tuple[str, str]:
+        """헤딩에서 (절 번호, 절 제목) 을 떼어낸다. 번호가 없으면 빈 문자열."""
+        title = heading_text.lstrip("#").strip()
+        matched = SECTION_LABEL_PATTERN.match(title)
+        if not matched:
+            return "", title
+        return matched.group(1).rstrip(".").strip(), matched.group(2).strip()
+
+    @classmethod
+    def _split_inline_headings(cls, paragraph: str) -> list[str]:
+        """문단에 파묻힌 절 표제를 떼어내 별도 헤딩 블록으로 만든다.
+
+        표제가 늘 독립된 줄로 오지는 않는다. IEEE 양식은 초록 표제를 본문 첫 줄에
+        붙여 쓰고, 폴백된 쪽에서는 절 표제가 문단 한가운데 섞인다. 그대로 두면
+        그 절이 통째로 앞 절에 흡수되어 abstract·conclusion 컬럼이 빈다.
+        """
+        pieces: list[str] = []
+
+        matched = INLINE_ABSTRACT_PATTERN.match(paragraph)
+        if matched:
+            pieces.append(f"## {matched.group(1).title()}")
+            paragraph = paragraph[matched.end():].strip()
+            if not paragraph:
+                return pieces
+
+        parts = INLINE_SECTION_PATTERN.split(paragraph)
+        if len(parts) == 1:
+            pieces.append(paragraph)
+            return pieces
+
+        # split 결과는 [앞글, 번호, 표제, 뒷글, 번호, 표제, ...] 로 이어진다.
+        leading = parts[0].strip()
+        if leading:
+            pieces.append(leading)
+        for index in range(1, len(parts), 3):
+            number, heading, tail = parts[index], parts[index + 1], parts[index + 2]
+            pieces.append(f"## {number} {heading.strip()}")
+            if tail.strip():
+                pieces.append(tail.strip())
+        return pieces
+
+    @staticmethod
+    def _extract_references(content: str) -> tuple[str, ...]:
+        """참고문헌 구역에서 인용 항목만 골라낸다.
+
+        절 컬럼에는 참고문헌을 담지 않지만(EXCLUDED_SECTION_TITLES), 목록 자체는
+        버리지 않는다. 뒤따르는 단계에서 인용된 논문을 따라 들어갈 실마리가 된다.
+
+        쪽 아래 각주가 같은 구역에 딸려 오므로(`<sup>28</sup>...`) 걸러낸다. 참고문헌
+        뒤에 부록이 오는 양식도 있어, 다음 헤딩을 만나면 거기서 멈춘다.
+        """
+        match = REFERENCE_SECTION_PATTERN.search(content)
+        if not match:
+            return ()
+
+        entries: list[str] = []
+        for block in content[match.end():].split("\n\n"):
+            block = block.strip()
+            if not block:
+                continue
+            if block.startswith("#"):
+                break                       # 부록 등 다음 절이 시작됐다
+            if block.startswith("<sup>"):
+                continue                    # 쪽 아래 각주
+            if len(block) >= MIN_REFERENCE_LENGTH:
+                entries.append(block)
+        return tuple(entries)
+
+    @staticmethod
+    def _numbering_style(numbers: list[str]) -> str:
+        """문서가 대단원에 어떤 번호 체계를 쓰는지 정한다. "arabic" | "roman" | "" 를 돌려준다.
+
+        라벨 하나만 봐서는 못 가린다. ``C`` 는 로마 숫자 100 이면서 소단원 글자이기도
+        해서, 실제로 ``C. Tasks`` 가 대단원으로 승격된 적이 있다. 문서 전체를 보면
+        확정된다. ``II``, ``III`` 처럼 두 글자 이상인 로마 숫자가 있으면 그 문서는
+        로마 숫자로 대단원을 매기는 것이고, 그때 한 글자짜리는 소단원 글자다.
+        """
+        if any(len(n) > 1 and ROMAN_SECTION_NUMBER.match(n) for n in numbers):
+            return "roman"
+        if any(ARABIC_SECTION_NUMBER.match(n) for n in numbers):
+            return "arabic"
+        return ""
+
+    @staticmethod
+    def _roman_value(number: str) -> int:
+        """로마 숫자를 정수로. 로마 숫자가 아니면 0."""
+        values = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
+        if not number or any(ch not in values for ch in number):
+            return 0
+        total = 0
+        for index, ch in enumerate(number):
+            current = values[ch]
+            following = values.get(number[index + 1], 0) if index + 1 < len(number) else 0
+            total += -current if current < following else current
+        return total
+
+    @classmethod
+    def _is_major_section(
+        cls, number: str, title: str, style: str = "", last_major: int = 0
+    ) -> bool:
+        """대단원인지 판정한다.
+
+        비전 모델이 매기는 헤딩 레벨은 들쭉날쭉해서(같은 논문에서 ``### 1 Introduction``
+        과 ``## 3 Original Beam Search`` 가 섞인다) 레벨로는 가릴 수 없다. 문서의 번호
+        체계와 절 이름으로 판단한다. 참고문헌은 대단원이어도 담지 않는다.
+
+        로마 체계에서는 번호를 **순서**로 본다. ``C`` 는 로마 숫자 100 이라 라벨만으로는
+        소단원 글자와 구별되지 않지만, 대단원은 I·II·III·IV·V·VI 로 이어지므로 앞
+        대단원 다음 값인지 보면 갈린다. ``V. RESULTS`` 는 살리고 ``C. Tasks`` 는 거른다.
+        """
+        plain = title.strip().lower().rstrip(".")
+        if plain in EXCLUDED_SECTION_TITLES:
+            return False
+
+        if number:
+            if style == "arabic":
+                return bool(ARABIC_SECTION_NUMBER.match(number))
+            if style == "roman":
+                value = cls._roman_value(number)
+                return value > 0 and value == last_major + 1
+            if ARABIC_SECTION_NUMBER.match(number) or ROMAN_SECTION_NUMBER.match(number):
+                return True
+
+        return plain in MAJOR_SECTION_TITLES
+
+    def _build_sections(self, numbered: list[tuple[int, str]]) -> tuple[Section, ...]:
+        """쪽번호가 붙은 블록을 논문의 대단원 단위로 묶는다.
+
+        대단원 헤딩을 만나면 새 절을 열고, 그 뒤의 소단원과 본문은 열려 있는 절에
+        이어 붙인다. 참고문헌 대단원부터는 담지 않는다. 첫 대단원 앞의 표지
+        (제목·저자·소속)는 어느 절에도 넣지 않는다.
+        """
+        # 문서가 쓰는 번호 체계를 먼저 정한다. 라벨 하나만 봐서는 C 가 로마 숫자인지
+        # 소단원 글자인지 못 가린다.
+        style = self._numbering_style(
+            [
+                self._split_section_label(text)[0]
+                for _, text in numbered
+                if self._is_heading(text)
+            ]
+        )
+
+        sections: list[Section] = []
+        title = ""
+        number = ""
+        pages: list[int] = []
+        parts: list[str] = []
+        collecting = False
+        stopped = False
+        last_major = 0   # 로마 체계에서 대단원 번호가 이어지는지 보기 위해 든다
+
+        def close() -> None:
+            if collecting and parts:
+                sections.append(
+                    Section(
+                        no=number,
+                        title=title,
+                        pages=tuple(sorted(set(pages))),
+                        text="\n\n".join(parts).strip(),
+                    )
+                )
+
+        for page, text in numbered:
+            if self._is_heading(text):
+                heading_no, heading_title = self._split_section_label(text)
+                plain = heading_title.strip().lower().rstrip(".")
+
+                if plain in EXCLUDED_SECTION_TITLES:
+                    close()
+                    collecting = False
+                    stopped = True          # 참고문헌부터는 끝까지 담지 않는다
+                    continue
+
+                if not stopped and self._is_major_section(
+                    heading_no, heading_title, style, last_major
+                ):
+                    close()
+                    number, title = heading_no, heading_title
+                    if style == "roman":
+                        last_major = self._roman_value(heading_no) or last_major
+                    pages, parts = [], []
+                    collecting = True
+                    continue
+
+            if collecting:
+                pages.append(page)
+                parts.append(text)
+
+        close()
+        return tuple(sections)
+
+    @staticmethod
+    def _keyword_bucket(title: str) -> str:
+        """절 이름의 낱말만 보고 구분을 고른다. 모델을 못 쓸 때의 대비책이다."""
+        plain = title.strip().lower()
+        for bucket, keywords in SECTION_KEYWORDS.items():
+            if any(keyword in plain for keyword in keywords):
+                return bucket
+        return OTHERS_COLUMN
+
+    def _classify_sections(self, title: str, sections: tuple[Section, ...]) -> dict[str, str]:
+        """대단원을 IMRaD 구분으로 나눈다.
+
+        절 이름은 논문마다 제각각이라('Original Beam Search', 'Direct Numerical
+        Simulations') 규칙만으로는 못 가린다. 절 목록과 첫 문장만 모델에 넘겨
+        한 번에 분류시킨다. 본문을 통째로 보내지 않으므로 호출 한 번이면 된다.
+
+        모델을 못 부르거나 응답이 깨지면 낱말 규칙으로 되돌린다. 어느 경우에도
+        분류에 실패한 절은 others 로 가므로 내용을 잃지 않는다.
+        """
+        fallback = {section.title: self._keyword_bucket(section.title) for section in sections}
+        if not sections or not is_available():
+            return fallback
+
+        listing = "\n".join(
+            f"{index}. {section.no + ' ' if section.no else ''}{section.title}\n"
+            f"   opening: {' '.join(section.text.split())[:120]}"
+            for index, section in enumerate(sections, start=1)
+        )
+        try:
+            response = chat(
+                [
+                    {"role": "system", "content": SECTION_CLASSIFY_SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": f"Paper title: {title}\n\n[Sections]\n{listing}",
+                    },
+                ],
+                max_tokens=1024,
+            )
+        except NvidiaServiceError as exc:
+            logger.log(LogCode.SECTION_CLASSIFY_FALLBACK, reason=str(exc)[:120])
+            return fallback
+
+        payload = self._parse_classification(response)
+        if not payload:
+            logger.log(LogCode.SECTION_CLASSIFY_FALLBACK, reason="응답을 해석하지 못함")
+            return fallback
+
+        # 모델은 목록에 보인 대로 번호를 붙여 답한다("3 Original Beam Search"). 제목만으로
+        # 찾으면 못 맞춰 전부 대비책으로 떨어지므로, 번호를 떼고 맞춘다.
+        answers = {
+            self._normalize_label(key): str(value).strip().lower()
+            for key, value in payload.items()
+        }
+        allowed = set(IMRAD_COLUMNS) | {OTHERS_COLUMN}
+
+        mapping: dict[str, str] = {}
+        for section in sections:
+            bucket = answers.get(self._normalize_label(section.title), "")
+            mapping[section.title] = bucket if bucket in allowed else fallback[section.title]
+        return mapping
+
+    @staticmethod
+    def _normalize_label(label: str) -> str:
+        """절 이름을 맞춰보기 좋게 다듬는다. 앞의 번호와 구두점을 떼고 소문자로."""
+        stripped = re.sub(r"^\s*(?:\d+(?:\.\d+)*|[IVXLC]{1,5}|[A-Z])[.)]?\s+", "", label.strip())
+        return re.sub(r"[^a-z0-9 ]", "", stripped.lower()).strip()
+
+    @staticmethod
+    def _parse_classification(response: str) -> dict:
+        """모델 응답에서 JSON 을 꺼낸다. 코드펜스나 군더더기가 붙어도 살려낸다."""
+        text = response.strip()
+        fenced = re.match(r"^```(?:json)?\s*(.*?)\s*```$", text, re.DOTALL)
+        if fenced:
+            text = fenced.group(1).strip()
+        if not text.startswith("{"):
+            brace = re.search(r"\{.*\}", text, re.DOTALL)
+            text = brace.group(0) if brace else text
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    def _to_imrad(
+        self, sections: tuple[Section, ...], mapping: dict[str, str]
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """대단원을 IMRaD 컬럼별로 합친다. (컬럼값, others) 를 돌려준다.
+
+        한 컬럼에 절이 여럿 들어갈 수 있으므로 절 제목을 헤딩으로 남긴다. 그래야
+        합쳐진 뒤에도 논문이 원래 쓰던 절 이름을 알 수 있다.
+        """
+        buckets: dict[str, list[str]] = {name: [] for name in IMRAD_COLUMNS}
+        others: dict[str, str] = {}
+
+        for section in sections:
+            label = f"{section.no} {section.title}".strip()
+            body = f"## {label}\n\n{section.text}"
+            target = mapping.get(section.title, OTHERS_COLUMN)
+            if target in buckets:
+                buckets[target].append(body)
+            else:
+                others[label] = section.text
+
+        return {name: "\n\n".join(parts) for name, parts in buckets.items()}, others
+
+    def get_part(self, paper_id: str, name: str) -> str:
+        """심층 질의응답이 쓰는 진입점: 표준 구분 하나의 본문을 돌려준다.
+
+        ``get_part(pid, "method")`` 처럼 부른다. 논문이 그 구분에 해당하는 절을
+        갖고 있지 않으면 빈 문자열이다.
+        """
+        record = self.get(paper_id)
+        if not record or name not in IMRAD_COLUMNS:
+            return ""
+        return record.get(name) or ""
+
+    def get_parts(self, paper_id: str) -> dict[str, str]:
+        """표준 구분 전체를 돌려준다. 내용이 있는 것만 담는다."""
+        record = self.get(paper_id)
+        if not record:
+            return {}
+        return {
+            name: record[name]
+            for name in IMRAD_COLUMNS
+            if record.get(name)
+        }
+
+    def get_others(self, paper_id: str) -> dict[str, str]:
+        """표준 구분에 넣지 못한 절. {절 이름: 내용} 형태다."""
+        record = self.get(paper_id)
+        if not record:
+            return {}
+        try:
+            payload = json.loads(record.get("others") or "{}")
+        except json.JSONDecodeError:
+            return {}
+        return payload if isinstance(payload, dict) else {}
 
     # ── 저장 ────────────────────────────────────────────────────────
 
@@ -799,24 +1335,44 @@ class PaperExtractor:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS extracted (
-                    id         TEXT PRIMARY KEY,
-                    title      TEXT,
-                    source_pdf TEXT,
-                    content    TEXT,
-                    n_pages    INTEGER,
-                    n_chars    INTEGER,
-                    extractor  TEXT,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    id           TEXT PRIMARY KEY,
+                    title        TEXT,
+                    source_pdf   TEXT,
+                    abstract     TEXT,
+                    introduction TEXT,
+                    related_work TEXT,
+                    method       TEXT,
+                    experiment   TEXT,
+                    result       TEXT,
+                    conclusion   TEXT,
+                    others       TEXT,
+                    reference_pdf TEXT,
+                    content      TEXT,
+                    n_pages      INTEGER,
+                    n_chars      INTEGER,
+                    extractor    TEXT,
+                    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
+            # CREATE TABLE IF NOT EXISTS 는 이미 있는 표에 컬럼을 더해주지 않는다.
+            # 앞서 만들어 둔 DB를 그대로 쓰는 팀원 쪽에서 저장이 깨지지 않도록,
+            # 없는 컬럼만 붙인다.
+            existing = {row[1] for row in conn.execute("PRAGMA table_info(extracted)")}
+            for column in ("reference_pdf",):
+                if column not in existing:
+                    conn.execute(f"ALTER TABLE extracted ADD COLUMN {column} TEXT")
 
     def markdown_path(self, paper_id: str) -> Path:
         """사람이 바로 열어볼 수 있는 마크다운 파일 경로."""
         return self.output_dir / f"{paper_id}.md"
 
     def _write_markdown(self, result: ExtractionResult) -> Path:
-        """가공본을 마크다운 파일로도 떨어뜨린다. 앞머리에 출처를 적어 둔다."""
+        """가공본을 마크다운 파일로도 떨어뜨린다. 앞머리에 출처를 적어 둔다.
+
+        DB보다 먼저 불릴 수 있으므로 폴더는 여기서도 만든다.
+        """
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         path = self.markdown_path(result.id)
         header = (
             f"# {result.title}\n\n"
@@ -828,34 +1384,51 @@ class PaperExtractor:
         return path
 
     def _save(self, result: ExtractionResult) -> None:
-        """가공본을 DB에 넣고, 제목 목록 JSON과 마크다운 파일을 함께 갱신한다."""
+        """가공본을 DB에 넣고 제목 목록 JSON 을 갱신한다.
+
+        마크다운은 추출 직후에 이미 써 두었으므로 여기서 다시 쓰지 않는다.
+        """
         self._init_db()
         with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.execute(
                 "INSERT OR REPLACE INTO extracted "
-                "(id, title, source_pdf, content, n_pages, n_chars, extractor, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                "(id, title, source_pdf, abstract, introduction, related_work, method, "
+                "experiment, result, conclusion, others, reference_pdf, content, "
+                "n_pages, n_chars, extractor, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
                 (
                     result.id,
                     result.title,
                     result.source_pdf,
+                    *[result.columns.get(name, "") for name in IMRAD_COLUMNS],
+                    json.dumps(result.others, ensure_ascii=False),
+                    json.dumps(list(result.references), ensure_ascii=False),
                     result.content,
                     result.n_pages,
                     result.n_chars,
                     result.extractor,
                 ),
             )
-        self._write_markdown(result)
         self._rebuild_json()
 
     def _rebuild_json(self) -> None:
-        """DB를 원본으로 삼아 제목 목록 JSON을 통째로 다시 쓴다."""
+        """DB를 원본으로 삼아 제목 목록 JSON을 통째로 다시 쓴다.
+
+        원본 PDF 파일명은 DB와 마크다운 머리말에 남으므로 여기서는 싣지 않는다.
+        대신 그 논문이 인용한 문헌 목록을 실어, 뒤따르는 단계가 DB를 열지 않고도
+        인용 관계를 훑을 수 있게 한다.
+        """
         with closing(sqlite3.connect(self.db_path)) as conn:
             rows = conn.execute(
-                "SELECT id, title, source_pdf FROM extracted ORDER BY created_at DESC"
+                "SELECT id, title, reference_pdf FROM extracted ORDER BY created_at DESC"
             ).fetchall()
         payload = {
-            row[0]: {"id": row[0], "title": row[1], "source_pdf": row[2]} for row in rows
+            row[0]: {
+                "id": row[0],
+                "title": row[1],
+                "reference_pdf": json.loads(row[2] or "[]"),
+            }
+            for row in rows
         }
         self.json_path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=4), encoding="utf-8"
