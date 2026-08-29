@@ -8,9 +8,12 @@ from collections.abc import Callable
 from langchain_core.tools import tool
 from log import AppLogger, LogCode
 
+from services.generation_options import resolve_float, resolve_positive_int
+from services.model_config_service import load_task_config
 from services.ollama_service import generate
 
 logger = AppLogger(__name__)
+KEYWORD_CONFIG = load_task_config("keyword")
 
 
 class KeywordToolError(RuntimeError):
@@ -35,8 +38,35 @@ def _clean_keywords(values: object) -> list[str]:
 class KeywordTool:
     """Ollama로 사용자 연구 주제를 arXiv 검색 키워드로 변환한다."""
 
-    def __init__(self, generator: Callable[..., str] | None = None) -> None:
+    def __init__(
+        self,
+        generator: Callable[..., str] | None = None,
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        timeout: float | None = None,
+    ) -> None:
         self._generator = generator or generate
+        self._model = str(KEYWORD_CONFIG["model"])
+        self._temperature = resolve_float(
+            "temperature",
+            KEYWORD_CONFIG["temperature"]
+            if temperature is None
+            else temperature,
+            minimum=0.0,
+            maximum=2.0,
+        )
+        self._max_tokens = resolve_positive_int(
+            "max_tokens",
+            KEYWORD_CONFIG["max_tokens"]
+            if max_tokens is None
+            else max_tokens,
+        )
+        self._timeout = resolve_float(
+            "timeout",
+            KEYWORD_CONFIG["timeout"] if timeout is None else timeout,
+            minimum=0.1,
+        )
 
     def generate_keywords(self, user_query: str) -> dict[str, list[str]]:
         """사용자 연구 주제를 영문 학술 검색 키워드 6개로 변환한다."""
@@ -45,7 +75,13 @@ class KeywordTool:
             logger.log(LogCode.KEYWORD_GENERATION_REJECTED, reason="empty_query")
             raise KeywordToolError("검색할 연구 주제를 입력해 주세요.")
 
-        logger.log(LogCode.KEYWORD_GENERATION_STARTED, query=raw_query)
+        logger.log(
+            LogCode.KEYWORD_GENERATION_STARTED,
+            query=raw_query,
+            temperature=self._temperature,
+            max_tokens=self._max_tokens,
+            timeout=self._timeout,
+        )
 
         prompt = f"""You are an expert in academic literature search for arXiv.
 Your task is to convert the user's research topic into exactly 6 concise, highly specific English academic search terms or technical keywords.
@@ -61,7 +97,14 @@ Your task is to convert the user's research topic into exactly 6 concise, highly
 
 User topic: {raw_query}"""
 
-        response = self._generator(prompt, response_format="json")
+        response = self._generator(
+            prompt,
+            model=self._model,
+            response_format="json",
+            temperature=self._temperature,
+            max_tokens=self._max_tokens,
+            timeout=self._timeout,
+        )
         payload = json.loads(response)
 
         if not isinstance(payload, dict):
