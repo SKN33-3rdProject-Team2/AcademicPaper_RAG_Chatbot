@@ -23,6 +23,9 @@ DEFAULT_EXTRACT_DB_PATH = (
 DEFAULT_REFERENCE_DB_PATH = (
     PROJECT_ROOT / "data" / "paper_extract" / "extracted_papers_ref.db"
 )
+DEFAULT_PROCESSED_OUTPUT_DIR = (
+    PROJECT_ROOT / "data" / "paper_list" / "processed_outputs"
+)
 DEFAULT_TRANSLATION_DIR = PROJECT_ROOT / "data" / "translations"
 DEFAULT_SUMMARY_DIR = PROJECT_ROOT / "data" / "summaries"
 DEFAULT_OPENAI_MODEL = "gpt-5.6-luna"
@@ -81,9 +84,9 @@ class RelatedPaperSearchAgent(Protocol):
 class PaperArtifactRepository:
     """추출 DB와 번역·요약 Markdown을 하나의 논문 데이터로 조립한다.
 
-    앞 단계의 실제 산출물은 한 DB에 모두 들어 있지 않다. ID와 제목은
-    ``extracted_papers.db``에서 읽고, 전문 번역과 구조화 요약은 같은 논문
-    ID를 파일명으로 사용하는 Markdown에서 읽는다.
+    ID와 제목은 ``extracted_papers.db``에서 읽고, 전문 번역과 구조화 요약은
+    팀원의 ``processed_outputs`` 제목 기반 파일에서 우선 읽는다. 이전 Tool이
+    만든 논문 ID 기반 번역·요약 파일도 하위 호환을 위해 계속 지원한다.
     """
 
     def __init__(
@@ -91,6 +94,7 @@ class PaperArtifactRepository:
         extract_db_path: str | Path = DEFAULT_EXTRACT_DB_PATH,
         *,
         reference_db_path: str | Path = DEFAULT_REFERENCE_DB_PATH,
+        processed_output_dir: str | Path = DEFAULT_PROCESSED_OUTPUT_DIR,
         translation_dir: str | Path = DEFAULT_TRANSLATION_DIR,
         summary_dir: str | Path = DEFAULT_SUMMARY_DIR,
         require_summary: bool = True,
@@ -98,6 +102,9 @@ class PaperArtifactRepository:
     ) -> None:
         self.extract_db_path = Path(extract_db_path).expanduser().resolve()
         self.reference_db_path = Path(reference_db_path).expanduser().resolve()
+        self.processed_output_dir = (
+            Path(processed_output_dir).expanduser().resolve()
+        )
         self.translation_dir = Path(translation_dir).expanduser().resolve()
         self.summary_dir = Path(summary_dir).expanduser().resolve()
         # 기본적으로 번역과 요약이 모두 끝난 논문만 목록에 보여준다.
@@ -121,6 +128,39 @@ class PaperArtifactRepository:
 
     def _summary_path(self, paper_id: str) -> Path:
         return self._artifact_path(self.summary_dir, paper_id)
+
+    @staticmethod
+    def _safe_processed_title(title: str) -> str:
+        """PaperExtraRAGBot과 같은 규칙으로 제목 기반 파일명을 만든다."""
+        cleaned = re.sub(r'[\\/*?:"<>|]', "", title)
+        cleaned = "_".join(cleaned.split())[:50].strip("_")
+        if not cleaned:
+            raise DeepResearchError("논문 제목으로 안전한 파일명을 만들 수 없습니다.")
+        return cleaned
+
+    def _processed_translation_path(self, title: str) -> Path:
+        safe_title = self._safe_processed_title(title)
+        return self.processed_output_dir / f"{safe_title}_full_translated.md"
+
+    def _processed_summary_path(self, title: str) -> Path:
+        safe_title = self._safe_processed_title(title)
+        return self.processed_output_dir / f"{safe_title}_summary.md"
+
+    def _resolve_artifact_paths(self, paper_id: str, title: str) -> tuple[Path, Path]:
+        """제목 기반 최신 결과를 우선하고 없으면 기존 ID 기반 경로를 쓴다."""
+        processed_translation = self._processed_translation_path(title)
+        processed_summary = self._processed_summary_path(title)
+        translation_path = (
+            processed_translation
+            if processed_translation.is_file()
+            else self._translation_path(paper_id)
+        )
+        summary_path = (
+            processed_summary
+            if processed_summary.is_file()
+            else self._summary_path(paper_id)
+        )
+        return translation_path, summary_path
 
     @staticmethod
     def _read_markdown(path: Path) -> str:
@@ -153,11 +193,15 @@ class PaperArtifactRepository:
             )
         return connection
 
-    def _is_ready(self, paper_id: str) -> tuple[bool, bool]:
-        has_translation = self._translation_path(paper_id).is_file()
-        has_summary = self._summary_path(paper_id).is_file()
+    def _artifact_status(
+        self, paper_id: str, title: str
+    ) -> tuple[bool, bool, Path, Path]:
+        """산출물 준비 여부와 실제로 선택된 번역·요약 경로를 반환한다."""
+        translation_path, summary_path = self._resolve_artifact_paths(paper_id, title)
+        has_translation = translation_path.is_file()
+        has_summary = summary_path.is_file()
         ready = has_translation and (has_summary or not self.require_summary)
-        return ready, has_summary
+        return ready, has_summary, translation_path, summary_path
 
     def list_translated_papers(self) -> list[dict[str, Any]]:
         """질의응답 가능한 논문을 추출 DB 순서대로 반환한다."""
@@ -172,14 +216,17 @@ class PaperArtifactRepository:
         papers: list[dict[str, Any]] = []
         for row in rows:
             paper_id = str(row["id"])
-            ready, has_summary = self._is_ready(paper_id)
+            title = str(row["title"])
+            ready, has_summary, translation_path, _summary_path = (
+                self._artifact_status(paper_id, title)
+            )
             has_extracted_content = bool(str(row["content"] or "").strip())
             if ready or (self.allow_extracted_only and has_extracted_content):
                 papers.append(
                     {
                         "id": paper_id,
-                        "title": str(row["title"]),
-                        "has_translation": self._translation_path(paper_id).is_file(),
+                        "title": title,
+                        "has_translation": translation_path.is_file(),
                         "has_summary": has_summary,
                         "has_extracted_content": has_extracted_content,
                     }
@@ -204,18 +251,23 @@ class PaperArtifactRepository:
         if row is None:
             return None
 
-        ready, has_summary = self._is_ready(paper_id)
+        title = str(row["title"])
+        ready, has_summary, translation_path, summary_path = (
+            self._artifact_status(paper_id, title)
+        )
         extracted_content = str(row["content"] or "").strip()
         if not ready and not (self.allow_extracted_only and extracted_content):
             return None
 
-        translation_path = self._translation_path(paper_id)
-        summary_path = self._summary_path(paper_id)
-        translated_text = self._read_markdown(translation_path) if translation_path.is_file() else ""
+        translated_text = (
+            self._read_markdown(translation_path)
+            if translation_path.is_file()
+            else ""
+        )
         structured_summary = self._read_markdown(summary_path) if has_summary else ""
         return {
             "id": str(row["id"]),
-            "title": str(row["title"]),
+            "title": title,
             # 기존 Answerer와 Retriever가 그대로 동작하도록 번역문이 없으면
             # extracted_papers.db의 전체 본문을 기본 질문 근거로 사용한다.
             "translation_text": translated_text or extracted_content,
@@ -236,6 +288,16 @@ class PaperArtifactRepository:
             "translation_completed": bool(translated_text),
             "translation_path": str(translation_path) if translated_text else "",
             "summary_path": str(summary_path) if has_summary else "",
+            "translation_source": (
+                "processed_outputs"
+                if translated_text and translation_path.parent == self.processed_output_dir
+                else ("legacy_artifact" if translated_text else "extracted_database")
+            ),
+            "summary_source": (
+                "processed_outputs"
+                if has_summary and summary_path.parent == self.processed_output_dir
+                else ("legacy_artifact" if has_summary else "")
+            ),
         }
 
     def list_references(self, paper_id: str) -> list[dict[str, Any]]:

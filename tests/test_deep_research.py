@@ -261,9 +261,11 @@ class PaperArtifactRepositoryTest(unittest.TestCase):
         root = Path(self.temp_dir.name)
         self.db_path = root / "paper_extract" / "extracted_papers.db"
         self.reference_db_path = root / "paper_extract" / "extracted_papers_ref.db"
+        self.processed_output_dir = root / "paper_list" / "processed_outputs"
         self.translation_dir = root / "translations"
         self.summary_dir = root / "summaries"
         self.db_path.parent.mkdir(parents=True)
+        self.processed_output_dir.mkdir(parents=True)
         self.translation_dir.mkdir()
         self.summary_dir.mkdir()
 
@@ -335,6 +337,7 @@ class PaperArtifactRepositoryTest(unittest.TestCase):
         self.repository = PaperArtifactRepository(
             self.db_path,
             reference_db_path=self.reference_db_path,
+            processed_output_dir=self.processed_output_dir,
             translation_dir=self.translation_dir,
             summary_dir=self.summary_dir,
             allow_extracted_only=False,
@@ -361,6 +364,8 @@ class PaperArtifactRepositoryTest(unittest.TestCase):
         self.assertIn("한국어 전문 번역", paper["translation_text"])
         self.assertIn("연구 목표 내용", paper["structured_summary"])
         self.assertTrue(paper["translation_completed"])
+        self.assertEqual(paper["translation_source"], "legacy_artifact")
+        self.assertEqual(paper["summary_source"], "legacy_artifact")
 
     def test_returns_none_until_summary_is_ready(self):
         """번역만 있고 요약이 없는 논문은 아직 선택하지 못하게 한다."""
@@ -373,6 +378,7 @@ class PaperArtifactRepositoryTest(unittest.TestCase):
         repository = PaperArtifactRepository(
             self.db_path,
             reference_db_path=self.reference_db_path,
+            processed_output_dir=self.processed_output_dir,
             translation_dir=self.translation_dir,
             summary_dir=self.summary_dir,
             allow_extracted_only=True,
@@ -384,6 +390,28 @@ class PaperArtifactRepositoryTest(unittest.TestCase):
         self.assertEqual(paper["translation_text"], "영문 추출 전문")
         self.assertEqual(paper["extracted_content"], "영문 추출 전문")
         self.assertFalse(paper["translation_completed"])
+        self.assertEqual(paper["translation_source"], "extracted_database")
+
+    def test_reads_processed_outputs_by_database_title(self):
+        """제목 기반 팀원 번역·요약 파일을 논문 ID 데이터와 연결한다."""
+        (self.processed_output_dir / "추출만_완료된_논문_full_translated.md").write_text(
+            "# 원제: 추출만 완료된 논문\n\n팀원 한국어 전문 번역",
+            encoding="utf-8",
+        )
+        (self.processed_output_dir / "추출만_완료된_논문_summary.md").write_text(
+            "# 추출만 완료된 논문 요약본\n\n팀원 구조화 요약",
+            encoding="utf-8",
+        )
+
+        paper = self.repository.get_paper("2401.00002v1")
+
+        self.assertIsNotNone(paper)
+        self.assertIn("팀원 한국어 전문 번역", paper["translation_text"])
+        self.assertIn("팀원 구조화 요약", paper["structured_summary"])
+        self.assertEqual(paper["translation_source"], "processed_outputs")
+        self.assertEqual(paper["summary_source"], "processed_outputs")
+        self.assertTrue(paper["translation_path"].endswith("_full_translated.md"))
+        self.assertTrue(paper["summary_path"].endswith("_summary.md"))
 
     def test_reads_references_from_separate_database(self):
         """paper_id로 분리된 참고문헌 DB를 순서대로 조회한다."""
