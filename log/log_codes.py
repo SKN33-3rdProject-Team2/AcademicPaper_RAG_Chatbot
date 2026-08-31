@@ -28,8 +28,18 @@ class LogCode(IntEnum):
     KEYWORD_GENERATION_REJECTED = 2400
     KEYWORD_GENERATION_FAILED = 2500
 
-    # 3xxx: arXiv 등 외부 논문 검색 기능용으로 예약
-    # 4xxx: 검색된 논문의 메타데이터·원문 저장 기능용으로 예약
+    # 3xxx: arXiv 등 외부 논문 검색 기능용
+    PAPER_SEARCH_STARTED = 3100
+    PAPER_SEARCH_SUCCEEDED = 3200
+    PAPER_SEARCH_REJECTED = 3400
+    PAPER_SEARCH_FAILED = 3500
+
+    # 4xxx: 검색된 논문의 메타데이터·원문 저장 기능용
+    PAPER_SAVE_STARTED = 4100
+    PAPER_SAVE_SUCCEEDED = 4200
+    PAPER_SAVE_REJECTED = 4400
+    PAPER_SAVE_FAILED = 4500
+    
     # 5xxx: PDF/원문 추출 및 마크다운 파싱
     PAPER_EXTRACTION_STARTED = 5100
     PAPER_EXTRACTION_SKIPPED = 5101

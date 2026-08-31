@@ -96,36 +96,204 @@ LOG_MESSAGES: dict[LogCode, dict[str, str]] = {
         "event": "section_classify_fallback",
         "message": "대단원 분류를 모델로 하지 못해 낱말 규칙으로 대체했습니다.",
     },
-    LogCode.TRANSLATION_STARTED: {"level": "INFO", "event": "translation_started", "message": "논문 번역을 시작합니다."},
-    LogCode.TRANSLATION_CHUNK_STARTED: {"level": "INFO", "event": "translation_chunk_started", "message": "논문 청크 번역을 시작합니다."},
-    LogCode.TRANSLATION_RESUMED: {"level": "INFO", "event": "translation_resumed", "message": "임시 체크포인트에서 논문 번역을 재개합니다."},
-    LogCode.TRANSLATION_RETRYING: {"level": "WARNING", "event": "translation_retrying", "message": "복구 가능한 오류로 논문 청크 번역을 재시도합니다."},
-    LogCode.TRANSLATION_CHUNK_SPLIT: {"level": "WARNING", "event": "translation_chunk_split", "message": "출력 토큰 한도를 초과한 번역 청크를 더 작게 분할합니다."},
-    LogCode.TRANSLATION_TABLE_PRESERVED: {"level": "WARNING", "event": "translation_table_preserved", "message": "표 번역 구조를 검증하지 못해 원문 표를 그대로 보존합니다."},
-    LogCode.TRANSLATION_SUCCEEDED: {"level": "INFO", "event": "translation_succeeded", "message": "논문 번역을 완료했습니다."},
-    LogCode.TRANSLATION_CHECKPOINT_SAVED: {"level": "INFO", "event": "translation_checkpoint_saved", "message": "번역 재개용 임시 체크포인트를 저장했습니다."},
-    LogCode.TRANSLATION_CHECKPOINT_DELETED: {"level": "INFO", "event": "translation_checkpoint_deleted", "message": "번역 완료 후 임시 체크포인트를 삭제했습니다."},
-    LogCode.TRANSLATION_MARKDOWN_SAVED: {"level": "INFO", "event": "translation_markdown_saved", "message": "논문 번역 마크다운 산출물을 저장했습니다."},
-    LogCode.TRANSLATION_REJECTED: {"level": "WARNING", "event": "translation_rejected", "message": "번역 조건을 충족하지 못해 논문 번역을 시작하지 않았습니다."},
-    LogCode.TRANSLATION_CHECKPOINT_INVALID: {"level": "WARNING", "event": "translation_checkpoint_invalid", "message": "임시 체크포인트를 재사용할 수 없어 처음부터 번역합니다."},
-    LogCode.TRANSLATION_FAILED: {"level": "ERROR", "event": "translation_failed", "message": "논문 번역에 실패했습니다. 잠시 후 다시 시도해 주세요."},
-    LogCode.TRANSLATION_CHECKPOINT_FAILED: {"level": "ERROR", "event": "translation_checkpoint_failed", "message": "번역 재개용 임시 체크포인트 처리에 실패했습니다."},
-    LogCode.TRANSLATION_MARKDOWN_SAVE_FAILED: {"level": "ERROR", "event": "translation_markdown_save_failed", "message": "논문 번역 마크다운 산출물을 저장하지 못했습니다."},
-    LogCode.SUMMARY_STARTED: {"level": "INFO", "event": "summary_started", "message": "번역된 논문의 구조화 요약을 시작합니다."},
-    LogCode.SUMMARY_CHUNK_STARTED: {"level": "INFO", "event": "summary_chunk_started", "message": "논문 청크에서 요약 근거 추출을 시작합니다."},
-    LogCode.SUMMARY_RESUMED: {"level": "INFO", "event": "summary_resumed", "message": "임시 체크포인트에서 논문 요약을 재개합니다."},
-    LogCode.SUMMARY_RETRYING: {"level": "WARNING", "event": "summary_retrying", "message": "일시적인 오류로 논문 요약 생성을 재시도합니다."},
-    LogCode.SUMMARY_REDUCE_STARTED: {"level": "INFO", "event": "summary_reduce_started", "message": "청크별 근거를 논문의 최종 4단 요약으로 통합합니다."},
-    LogCode.SUMMARY_SUCCEEDED: {"level": "INFO", "event": "summary_succeeded", "message": "논문의 4단 구조 요약을 완료했습니다."},
-    LogCode.SUMMARY_MARKDOWN_SAVED: {"level": "INFO", "event": "summary_markdown_saved", "message": "논문 요약 마크다운 산출물을 저장했습니다."},
-    LogCode.SUMMARY_CHECKPOINT_SAVED: {"level": "INFO", "event": "summary_checkpoint_saved", "message": "요약 재개용 청크 체크포인트를 저장했습니다."},
-    LogCode.SUMMARY_CHECKPOINT_DELETED: {"level": "INFO", "event": "summary_checkpoint_deleted", "message": "요약 완료 후 임시 체크포인트를 삭제했습니다."},
-    LogCode.SUMMARY_REJECTED: {"level": "WARNING", "event": "summary_rejected", "message": "요약 조건을 충족하지 못해 논문 요약을 시작하지 않았습니다."},
-    LogCode.SUMMARY_CHECKPOINT_INVALID: {"level": "WARNING", "event": "summary_checkpoint_invalid", "message": "임시 체크포인트를 재사용할 수 없어 처음부터 요약합니다."},
-    LogCode.SUMMARY_FAILED: {"level": "ERROR", "event": "summary_failed", "message": "논문 요약 생성에 실패했습니다."},
-    LogCode.SUMMARY_MARKDOWN_SAVE_FAILED: {"level": "ERROR", "event": "summary_markdown_save_failed", "message": "논문 요약 마크다운 산출물을 저장하지 못했습니다."},
-    LogCode.SUMMARY_CHECKPOINT_FAILED: {"level": "ERROR", "event": "summary_checkpoint_failed", "message": "요약 재개용 임시 체크포인트 처리에 실패했습니다."},
-    LogCode.SUMMARY_STORAGE_STARTED: {"level": "INFO", "event": "summary_storage_started", "message": "논문 요약의 Vector DB 저장을 시작합니다."},
-    LogCode.SUMMARY_STORAGE_SUCCEEDED: {"level": "INFO", "event": "summary_storage_succeeded", "message": "논문 요약을 Vector DB에 저장했습니다."},
-    LogCode.SUMMARY_STORAGE_FAILED: {"level": "ERROR", "event": "summary_storage_failed", "message": "논문 요약을 Vector DB에 저장하지 못했습니다."},
+    LogCode.PAPER_SEARCH_STARTED: {
+        "level": "INFO",
+        "event": "paper_search_started",
+        "message": "arXiv 외부 학술 논문 검색을 시작합니다.",
+    },
+    LogCode.PAPER_SEARCH_SUCCEEDED: {
+        "level": "INFO",
+        "event": "paper_search_succeeded",
+        "message": "arXiv 외부 학술 논문 검색을 성공적으로 완료했습니다.",
+    },
+    LogCode.PAPER_SEARCH_REJECTED: {
+        "level": "WARNING",
+        "event": "paper_search_rejected",
+        "message": "검색 조건이 비어 있거나 취소되어 외부 논문 검색을 수행하지 않았습니다.",
+    },
+    LogCode.PAPER_SEARCH_FAILED: {
+        "level": "ERROR",
+        "event": "paper_search_failed",
+        "message": "arXiv 외부 학술 논문 검색 처리 중 오류가 발생했습니다.",
+    },
+    LogCode.PAPER_SAVE_STARTED: {
+        "level": "INFO",
+        "event": "paper_save_started",
+        "message": "검색된 논문 메타데이터 저장을 시작합니다.",
+    },
+    LogCode.PAPER_SAVE_SUCCEEDED: {
+        "level": "INFO",
+        "event": "paper_save_succeeded",
+        "message": "선택한 논문 메타데이터를 서재 DB 및 JSON에 성공적으로 저장했습니다.",
+    },
+    LogCode.PAPER_SAVE_REJECTED: {
+        "level": "WARNING",
+        "event": "paper_save_rejected",
+        "message": "저장할 논문이 선택되지 않아 저장을 건너뜁니다.",
+    },
+    LogCode.PAPER_SAVE_FAILED: {
+        "level": "ERROR",
+        "event": "paper_save_failed",
+        "message": "논문 메타데이터를 저장하는 중 오류가 발생했습니다.",
+    },
+    LogCode.TRANSLATION_STARTED: {
+        "level": "INFO",
+        "event": "translation_started",
+        "message": "논문 번역을 시작합니다."
+    },
+    LogCode.TRANSLATION_CHUNK_STARTED: {
+        "level": "INFO",
+        "event": "translation_chunk_started",
+        "message": "논문 청크 번역을 시작합니다."
+    },
+    LogCode.TRANSLATION_RESUMED: {
+        "level": "INFO",
+        "event": "translation_resumed",
+        "message": "임시 체크포인트에서 논문 번역을 재개합니다."
+    },
+    LogCode.TRANSLATION_RETRYING: {
+        "level": "WARNING",
+        "event": "translation_retrying",
+        "message": "복구 가능한 오류로 논문 청크 번역을 재시도합니다."
+    },
+    LogCode.TRANSLATION_CHUNK_SPLIT: {
+        "level": "WARNING",
+        "event": "translation_chunk_split",
+        "message": "출력 토큰 한도를 초과한 번역 청크를 더 작게 분할합니다."
+    },
+    LogCode.TRANSLATION_TABLE_PRESERVED: {
+        "level": "WARNING",
+        "event": "translation_table_preserved",
+        "message": "표 번역 구조를 검증하지 못해 원문 표를 그대로 보존합니다."
+    },
+    LogCode.TRANSLATION_SUCCEEDED: {
+        "level": "INFO",
+        "event": "translation_succeeded",
+        "message": "논문 번역을 완료했습니다."
+    },
+    LogCode.TRANSLATION_CHECKPOINT_SAVED: {
+        "level": "INFO",
+        "event": "translation_checkpoint_saved",
+        "message": "번역 재개용 임시 체크포인트를 저장했습니다."
+    },
+    LogCode.TRANSLATION_CHECKPOINT_DELETED: {
+        "level": "INFO",
+        "event": "translation_checkpoint_deleted",
+        "message": "번역 완료 후 임시 체크포인트를 삭제했습니다."
+    },
+    LogCode.TRANSLATION_MARKDOWN_SAVED: {
+        "level": "INFO",
+        "event": "translation_markdown_saved",
+        "message": "논문 번역 마크다운 산출물을 저장했습니다.",
+    },
+    LogCode.TRANSLATION_REJECTED: {
+        "level": "WARNING",
+        "event": "translation_rejected",
+        "message": "번역 조건을 충족하지 못해 논문 번역을 시작하지 않았습니다.",
+    },
+    LogCode.TRANSLATION_CHECKPOINT_INVALID: {
+        "level": "WARNING",
+        "event": "translation_checkpoint_invalid",
+        "message": "임시 체크포인트를 재사용할 수 없어 처음부터 번역합니다.",
+    },
+    LogCode.TRANSLATION_FAILED: {
+        "level": "ERROR",
+        "event": "translation_failed",
+        "message": "논문 번역에 실패했습니다. 잠시 후 다시 시도해 주세요.",
+    },
+    LogCode.TRANSLATION_CHECKPOINT_FAILED: {
+        "level": "ERROR",
+        "event": "translation_checkpoint_failed",
+        "message": "번역 재개용 임시 체크포인트 처리에 실패했습니다.",
+    },
+    LogCode.TRANSLATION_MARKDOWN_SAVE_FAILED: {
+        "level": "ERROR",
+        "event": "translation_markdown_save_failed",
+        "message": "논문 번역 마크다운 산출물을 저장하지 못했습니다.",
+    },
+    LogCode.SUMMARY_STARTED: {
+        "level": "INFO",
+        "event": "summary_started",
+        "message": "번역된 논문의 구조화 요약을 시작합니다.",
+    },
+    LogCode.SUMMARY_CHUNK_STARTED: {
+        "level": "INFO",
+        "event": "summary_chunk_started",
+        "message": "논문 청크에서 요약 근거 추출을 시작합니다.",
+    },
+    LogCode.SUMMARY_RESUMED: {
+        "level": "INFO",
+        "event": "summary_resumed",
+        "message": "임시 체크포인트에서 논문 요약을 재개합니다.",
+    },
+    LogCode.SUMMARY_RETRYING: {
+        "level": "WARNING",
+        "event": "summary_retrying",
+        "message": "일시적인 오류로 논문 요약 생성을 재시도합니다.",
+    },
+    LogCode.SUMMARY_REDUCE_STARTED: {
+        "level": "INFO",
+        "event": "summary_reduce_started",
+        "message": "청크별 근거를 논문의 최종 4단 요약으로 통합합니다.",
+    },
+    LogCode.SUMMARY_SUCCEEDED: {
+        "level": "INFO",
+        "event": "summary_succeeded",
+        "message": "논문의 4단 구조 요약을 완료했습니다.",
+    },
+    LogCode.SUMMARY_MARKDOWN_SAVED: {
+        "level": "INFO",
+        "event": "summary_markdown_saved",
+        "message": "논문 요약 마크다운 산출물을 저장했습니다.",
+    },
+    LogCode.SUMMARY_CHECKPOINT_SAVED: {
+        "level": "INFO",
+        "event": "summary_checkpoint_saved",
+        "message": "요약 재개용 청크 체크포인트를 저장했습니다.",
+    },
+    LogCode.SUMMARY_CHECKPOINT_DELETED: {
+        "level": "INFO",
+        "event": "summary_checkpoint_deleted",
+        "message": "요약 완료 후 임시 체크포인트를 삭제했습니다.",
+    },
+    LogCode.SUMMARY_REJECTED: {
+        "level": "WARNING",
+        "event": "summary_rejected",
+        "message": "요약 조건을 충족하지 못해 논문 요약을 시작하지 않았습니다.",
+    },
+    LogCode.SUMMARY_CHECKPOINT_INVALID: {
+        "level": "WARNING",
+        "event": "summary_checkpoint_invalid",
+        "message": "임시 체크포인트를 재사용할 수 없어 처음부터 요약합니다.",
+    },
+    LogCode.SUMMARY_FAILED: {
+        "level": "ERROR",
+        "event": "summary_failed",
+        "message": "논문 요약 생성에 실패했습니다.",
+    },
+    LogCode.SUMMARY_MARKDOWN_SAVE_FAILED: {
+        "level": "ERROR",
+        "event": "summary_markdown_save_failed",
+        "message": "논문 요약 마크다운 산출물을 저장하지 못했습니다.",
+    },
+    LogCode.SUMMARY_CHECKPOINT_FAILED: {
+        "level": "ERROR",
+        "event": "summary_checkpoint_failed",
+        "message": "요약 재개용 임시 체크포인트 처리에 실패했습니다.",
+    },
+    LogCode.SUMMARY_STORAGE_STARTED: {
+        "level": "INFO",
+        "event": "summary_storage_started",
+        "message": "논문 요약의 Vector DB 저장을 시작합니다.",
+    },
+    LogCode.SUMMARY_STORAGE_SUCCEEDED: {
+        "level": "INFO",
+        "event": "summary_storage_succeeded",
+        "message": "논문 요약을 Vector DB에 저장했습니다.",
+    },
+    LogCode.SUMMARY_STORAGE_FAILED: {
+        "level": "ERROR",
+        "event": "summary_storage_failed",
+        "message": "논문 요약을 Vector DB에 저장하지 못했습니다.",
+    },
 }
