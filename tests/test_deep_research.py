@@ -63,6 +63,31 @@ class FailingSummaryStore:
         raise RuntimeError("테스트용 Chroma 오류")
 
 
+class FakeSearchAgent:
+    """외부 네트워크 없이 참조 논문 검색 연결을 검사하는 가짜 에이전트."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def search_papers(
+        self, final_query: str, sort_by: str = "r", max_results: int = 10
+    ) -> list[dict]:
+        self.calls.append(
+            {
+                "query": final_query,
+                "sort_by": sort_by,
+                "max_results": max_results,
+            }
+        )
+        return [
+            {
+                "id": "searched-paper",
+                "title": "검색된 참조 논문",
+                "summary": "검색 에이전트가 반환한 결과",
+            }
+        ]
+
+
 class DeepResearchBotTest(unittest.TestCase):
     def setUp(self) -> None:
         # 각 테스트마다 운영 DB와 완전히 분리된 임시 폴더·DB를 만든다.
@@ -196,7 +221,7 @@ class DeepResearchBotTest(unittest.TestCase):
 
     @unittest.skipUnless(find_spec("langchain_core"), "langchain-core가 설치된 환경에서 검사")
     def test_creates_importable_langchain_tools(self):
-        """통합 Agent에 전달할 Tool 네 개가 생성되는지 확인한다."""
+        """통합 Agent에 전달할 Tool 여섯 개가 생성되는지 확인한다."""
         tools = self.bot.as_tools()
 
         self.assertEqual(
@@ -205,6 +230,8 @@ class DeepResearchBotTest(unittest.TestCase):
                 "list_translated_papers",
                 "select_research_paper",
                 "ask_selected_paper",
+                "list_reference_papers",
+                "search_reference_papers",
                 "reset_selected_paper",
             ],
         )
@@ -233,6 +260,7 @@ class PaperArtifactRepositoryTest(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         root = Path(self.temp_dir.name)
         self.db_path = root / "paper_extract" / "extracted_papers.db"
+        self.reference_db_path = root / "paper_extract" / "extracted_papers_ref.db"
         self.translation_dir = root / "translations"
         self.summary_dir = root / "summaries"
         self.db_path.parent.mkdir(parents=True)
@@ -245,7 +273,19 @@ class PaperArtifactRepositoryTest(unittest.TestCase):
                 CREATE TABLE extracted (
                     id TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
-                    content TEXT
+                    source_pdf TEXT,
+                    abstract TEXT,
+                    introduction TEXT,
+                    related_work TEXT,
+                    method TEXT,
+                    experiment TEXT,
+                    result TEXT,
+                    conclusion TEXT,
+                    others TEXT,
+                    content TEXT,
+                    n_pages INTEGER,
+                    n_chars INTEGER,
+                    extractor TEXT
                 )
                 """
             )
@@ -255,6 +295,27 @@ class PaperArtifactRepositoryTest(unittest.TestCase):
                     ("2312.04649v1", "번역과 요약 완료 논문", "영문 추출 전문"),
                     ("2401.00001v1", "번역만 완료된 논문", "영문 추출 전문"),
                     ("2401.00002v1", "추출만 완료된 논문", "영문 추출 전문"),
+                ],
+            )
+        with sqlite3.connect(self.reference_db_path) as connection:
+            connection.execute(
+                """
+                CREATE TABLE extracted_ref (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    paper_id TEXT,
+                    ref_index INTEGER,
+                    reference_text TEXT
+                )
+                """
+            )
+            connection.executemany(
+                """
+                INSERT INTO extracted_ref (paper_id, ref_index, reference_text)
+                VALUES (?, ?, ?)
+                """,
+                [
+                    ("2312.04649v1", 1, "[1] Attention Is All You Need."),
+                    ("2312.04649v1", 2, "[2] Retrieval-Augmented Generation."),
                 ],
             )
 
@@ -273,8 +334,10 @@ class PaperArtifactRepositoryTest(unittest.TestCase):
 
         self.repository = PaperArtifactRepository(
             self.db_path,
+            reference_db_path=self.reference_db_path,
             translation_dir=self.translation_dir,
             summary_dir=self.summary_dir,
+            allow_extracted_only=False,
         )
 
     def tearDown(self) -> None:
@@ -304,6 +367,62 @@ class PaperArtifactRepositoryTest(unittest.TestCase):
         paper = self.repository.get_paper("2401.00001v1")
 
         self.assertIsNone(paper)
+
+    def test_reads_extracted_database_without_translation_files(self):
+        """번역 파일이 없어도 extracted DB 본문을 질문 근거로 제공한다."""
+        repository = PaperArtifactRepository(
+            self.db_path,
+            reference_db_path=self.reference_db_path,
+            translation_dir=self.translation_dir,
+            summary_dir=self.summary_dir,
+            allow_extracted_only=True,
+        )
+
+        paper = repository.get_paper("2401.00002v1")
+
+        self.assertIsNotNone(paper)
+        self.assertEqual(paper["translation_text"], "영문 추출 전문")
+        self.assertEqual(paper["extracted_content"], "영문 추출 전문")
+        self.assertFalse(paper["translation_completed"])
+
+    def test_reads_references_from_separate_database(self):
+        """paper_id로 분리된 참고문헌 DB를 순서대로 조회한다."""
+        references = self.repository.list_references("2312.04649v1")
+
+        self.assertEqual([item["ref_index"] for item in references], [1, 2])
+        self.assertIn("Attention Is All You Need", references[0]["reference_text"])
+
+    def test_asks_before_search_and_reports_missing_agent(self):
+        """관련 논문을 보여준 뒤 검색 동의를 받고 미연결 상태를 안내한다."""
+        bot = DeepResearchBot(self.repository, FakeAnswerer())
+        bot.select_paper(1)
+
+        confirmation = bot.handle_message("이 논문과 관련된 다른 논문이 있어?")
+        unavailable = bot.handle_message("응, 검색해줘")
+
+        self.assertEqual(confirmation["status"], "search_confirmation")
+        self.assertEqual(confirmation["count"], 2)
+        self.assertIn("검색해드릴까요", confirmation["message"])
+        self.assertEqual(unavailable["status"], "search_agent_unavailable")
+        self.assertIn("검색 에이전트가 존재하지 않아", unavailable["message"])
+
+    def test_searches_references_when_search_agent_is_connected(self):
+        """검색 에이전트가 연결되면 사용자 동의 후 참조 논문을 검색한다."""
+        search_agent = FakeSearchAgent()
+        bot = DeepResearchBot(
+            self.repository,
+            FakeAnswerer(),
+            search_agent=search_agent,
+        )
+        bot.select_paper(1)
+
+        bot.handle_message("비슷한 논문도 있어?")
+        result = bot.handle_message("네, 찾아줘")
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["results"][0]["id"], "searched-paper")
+        self.assertEqual(len(search_agent.calls), 2)
+        self.assertNotIn("[1]", search_agent.calls[0]["query"])
 
 
 class ChromaSummaryRetrieverTest(unittest.TestCase):
