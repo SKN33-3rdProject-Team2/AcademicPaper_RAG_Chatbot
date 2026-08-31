@@ -1,8 +1,8 @@
 """학술 논문 본문 전체 추출, DB/인용문헌(References) DB 자동 매핑, 피규어 캡션 통합 관리 및 백그라운드 마크다운 번역/요약 모듈.
 
 - PDF 추출 데이터를 메인 본문 DB(extracted_papers.db)와 인용문헌 DB(extracted_papers_ref.db)에 'paper_id' 기준으로 분리 저장
-- 피규어 및 테이블 캡션은 본문 스트림 내에 자연스럽게 통합 관리
-- 수식을 한 줄로 정돈하고 핵심 중심의 간결한 마크다운(.md) 번역 결과물 자동 저장 및 전용 로그 코드 매핑
+- 윈도우 파일 시스템 제약에 안전한 파일명 정규화 로직 적용으로 FileNotFoundError 원천 차단
+- 수식을 한 줄로 정돈하고 핵심 중심의 간결한 마크다운(.md) 번역 결과물 자동 저장
 """
 
 from __future__ import annotations
@@ -1106,8 +1106,10 @@ class PaperExtraRAGBot:
 
     @staticmethod
     def _safe_filename(title: str) -> str:
-        cleaned = "".join(c for c in title if c.isalnum() or c in " _-").rstrip()
-        return cleaned[:60].strip()
+        """윈도우 파일 시스템 제약(길이 제한, 특수문자)에 안전한 파일명을 생성한다."""
+        cleaned = re.sub(r'[\\/*?:"<>|]', "", title)
+        cleaned = "_".join(cleaned.split())
+        return cleaned[:50].strip("_")
 
     def _get_db_connection(self) -> sqlite3.Connection:
         return sqlite3.connect(self.db_file)
@@ -1249,7 +1251,6 @@ class PaperExtraRAGBot:
     def execute_translation(self, paper: Dict[str, Any]) -> str:
         full_content = self._ensure_paper_extracted(paper["id"])
 
-        # 💡 [수정됨] 번역 시작 로그 코드 명시 (LogCode.TRANSLATION_STARTED)
         self.logger.log(LogCode.TRANSLATION_STARTED, action="translate_full_md", paper_id=paper["id"])
         print(f"[System] 🔄 '{paper['title']}' 본문 전체 마크다운 번역 실행 중...")
 
@@ -1262,6 +1263,8 @@ class PaperExtraRAGBot:
 
         translated_text = res.content
         safe_title = self._safe_filename(paper["title"])
+
+        os.makedirs(self.output_dir, exist_ok=True)
         out_path = os.path.join(self.output_dir, f"{safe_title}_full_translated.md")
 
         with open(out_path, "w", encoding="utf-8") as f:
@@ -1273,7 +1276,6 @@ class PaperExtraRAGBot:
     def execute_summary(self, paper: Dict[str, Any], translated_text: Optional[str] = None) -> str:
         full_content = translated_text if translated_text else self._ensure_paper_extracted(paper["id"])
 
-        # 💡 [수정됨] 요약 시작 로그 코드 명시 (LogCode.SUMMARY_STARTED)
         self.logger.log(LogCode.SUMMARY_STARTED, action="summarize", paper_id=paper["id"])
         print(f"[System] 📝 '{paper['title']}' 핵심 요약 보고서 생성 실행 중...")
 
@@ -1286,6 +1288,8 @@ class PaperExtraRAGBot:
 
         summary_text = res.content
         safe_title = self._safe_filename(paper["title"])
+
+        os.makedirs(self.output_dir, exist_ok=True)
         out_path = os.path.join(self.output_dir, f"{safe_title}_summary.md")
 
         with open(out_path, "w", encoding="utf-8") as f:
@@ -1308,7 +1312,7 @@ class PaperExtraRAGBot:
 
     def run(self):
         print("=" * 70)
-        print("🤖 학술 서재 RAG 대화형 서비스 (로그 매핑 최적화 및 마크다운 번역)")
+        print("🤖 학술 서재 RAG 대화형 서비스 (파일명 정규화 및 마크다운 번역)")
         print("=" * 70)
         print("💡 무엇을 도와드릴까요? (예: '나 무슨 논문 갖고 있어?', 'AI 관련 논문 찾아줘')\n")
 
@@ -1356,7 +1360,7 @@ class PaperExtraRAGBot:
                 print(f" 📂 메타데이터 DB: {self.db_file}")
                 print(f" 📂 목록 JSON: {self.json_file}")
                 print(f" 📂 번역/요약 결과 저장 폴더: {self.output_dir} (마크다운 .md 형식)")
-                print(f" 📂 추출 본문 DB (피규어/테이블 캡션 포함): {DEFAULT_OUTPUT_DIR / 'extracted_papers.db'}")
+                print(f" 📂 추출 본문 DB: {DEFAULT_OUTPUT_DIR / 'extracted_papers.db'}")
                 print(f" 📂 인용문헌 DB: {DEFAULT_OUTPUT_DIR / 'extracted_papers_ref.db'}")
                 print(f" 📂 원본 PDF 저장 폴더: {DEFAULT_PDF_DIR}")
 
@@ -1372,16 +1376,37 @@ class PaperExtraRAGBot:
                         print(f"\n🤖 서재에서 '{intent.keyword}' 관련 논문을 찾지 못했습니다.")
                         continue
 
+                if not self.candidate_papers and not self.selected_papers:
+                    papers, total_count = self.fetch_papers_paginated(self.current_page, self.page_size)
+                    self.candidate_papers = papers
+
                 if intent.select_all or any(w in user_input for w in ["모두", "전부", "다", "전체"]):
                     if self.candidate_papers:
                         self.selected_papers = self.candidate_papers
+                    else:
+                        print("\n[System] ⚠️ 현재 서재에 저장된 논문이 존재하지 않습니다. 먼저 논문 검색 및 다운로드를 진행해 주세요.")
+                        continue
                 elif intent.selected_indices:
                     if self.candidate_papers:
-                        self.selected_papers = [
-                            self.candidate_papers[i - 1]
-                            for i in intent.selected_indices
-                            if 0 < i <= len(self.candidate_papers)
-                        ]
+                        valid_papers = []
+                        invalid_indices = []
+                        for i in intent.selected_indices:
+                            if 0 < i <= len(self.candidate_papers):
+                                valid_papers.append(self.candidate_papers[i - 1])
+                            else:
+                                invalid_indices.append(i)
+
+                        if invalid_indices:
+                            print(f"\n[System] ⚠️ 입력하신 번호 {invalid_indices}번은 현재 목록에 존재하지 않습니다.")
+                            print("[System] 💡 '리스트 보여줘'를 통해 목록을 확인하신 후 올바른 번호를 선택해 주세요.")
+
+                        if valid_papers:
+                            self.selected_papers = valid_papers
+                        else:
+                            continue
+                    else:
+                        print("\n[System] ⚠️ 선택 가능한 논문 목록이 없습니다. 먼저 논문 목록을 불러와 주세요.")
+                        continue
 
                 act = intent.action_type
                 if not act:
@@ -1395,11 +1420,20 @@ class PaperExtraRAGBot:
                 if not self.selected_papers and self.candidate_papers:
                     digits = [int(s) for s in re.findall(r'\d+', user_input)]
                     if digits:
-                        self.selected_papers = [
-                            self.candidate_papers[d - 1]
-                            for d in digits
-                            if 0 < d <= len(self.candidate_papers)
-                        ]
+                        valid_papers = []
+                        invalid_digits = []
+                        for d in digits:
+                            if 0 < d <= len(self.candidate_papers):
+                                valid_papers.append(self.candidate_papers[d - 1])
+                            else:
+                                invalid_digits.append(d)
+
+                        if invalid_digits:
+                            print(f"\n[System] ⚠️ 입력하신 번호 {invalid_digits}번은 현재 목록에 존재하지 않습니다.")
+                            print("[System] 💡 목록에 존재하는 논문 번호를 선택해 주세요.")
+
+                        if valid_papers:
+                            self.selected_papers = valid_papers
 
                 if self.selected_papers and act:
                     self._process_batch_actions(self.selected_papers, act)
@@ -1407,7 +1441,7 @@ class PaperExtraRAGBot:
                 elif self.selected_papers and not act:
                     print(f"\n🤖 총 {len(self.selected_papers)}편의 논문이 선택되었습니다. **무엇을 변환 시켜 드릴까요?** ('번역', '요약', '번역과 요약')")
                 elif not self.selected_papers and act:
-                    print(f"\n🤖 먼저 번역이나 요약할 논문을 선택해 주세요. (예: '1번', '3번', '모두')")
+                    print(f"\n🤖 먼저 유효한 논문 번호를 선택해 주세요. (예: '1번', '3번', '모두')")
                 elif not self.selected_papers and not intent.keyword:
                     print("\n🤖 원하시는 논문 번호를 선택해 주세요. (예: '1번', '1, 3번', '모두')")
 
