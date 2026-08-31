@@ -329,6 +329,42 @@ class ArxivSearchBot:
                 print("\n[System] 저장을 건너뜁니다.")
 
 
+# ... (기존 search.py의 클래스 및 로직은 100% 그대로 유지) ...
+
+# ---------------------------------------------------------------------
+# [LangChain 에이전트 전용 툴 정의] (paper_extractor.py 처럼 맨 아래에 추가)
+# ---------------------------------------------------------------------
+from langchain_core.tools import tool
+
+
+class ArxivToolInput(BaseModel):
+    query: str = Field(..., description="ArXiv 논문 검색을 위한 영문 키워드")
+    max_results: int = Field(default=5, description="검색할 최대 논문 수")
+
+
+@tool("search_and_save_arxiv_papers", args_schema=ArxivToolInput)
+def search_and_save_arxiv_papers(query: str, max_results: int = 5) -> str:
+    """ArXiv에서 외부 논문을 검색하고 메타데이터를 로컬 서재에 자동 저장합니다."""
+    # 사용자님이 만든 멀쩡한 봇을 그대로 가져와서 실행만 시켜줍니다.
+    bot = ArxivSearchBot()
+    papers = bot.search_papers(query, sort_by='r', max_results=max_results)
+
+    if not papers:
+        return f"'{query}'에 대한 외부 검색 결과가 없습니다."
+
+    try:
+        save_msg = bot.save_papers(papers)
+        result_text = f"검색 및 저장 성공: {save_msg}\n"
+        for p in papers:
+            result_text += f"- [{p['id']}] {p['title']}\n"
+        return result_text
+    except Exception as e:
+        return f"논문 저장 중 오류 발생: {e}"
+
+
+# ---------------------------------------------------------------------
+# [실행 메인 엔트리포인트]
+# ---------------------------------------------------------------------
 if __name__ == "__main__":
     bot = ArxivSearchBot()
     bot.start()
