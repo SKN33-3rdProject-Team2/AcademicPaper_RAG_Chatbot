@@ -1,0 +1,50 @@
+# 공통 제공자 연결 정보와 paper_extractor.py의 NVIDIA 설정
+providers:
+  ollama:
+    host: http://localhost:11434
+    connection_timeout: 3
+
+# tools/keyword_tool.py
+keyword:
+  provider: ollama
+  model: qwen2.5:3b
+  temperature: 0.2
+  max_tokens: 160
+  timeout: 25
+
+# services/translation_service.py, tools/translation_tool.py
+translation:
+  provider: ollama
+  model: translategemma:4b
+  stream: true
+  temperature: 0.2
+  max_tokens: 8192
+  timeout: 600
+  chunk_chars: 4000
+  max_retries: 2
+  retry_backoff_seconds: 2.0
+  output_directory: data/translations
+
+# tools/summary_tool.py, services/summary_markdown_store.py
+summary:
+  provider: ollama
+  model: gemma3:4b
+  temperature: 0.0
+  max_tokens: 4096
+  timeout: 300
+  chunk_chars: 7000
+  chunk_max_tokens: 2048
+  max_retries: 2
+  retry_backoff_seconds: 2.0
+  output_directory: data/summaries
+
+# services/summary_vector_store.py
+summary_store:
+  embedding:
+    model: BAAI/bge-m3
+    device: cpu
+    normalize_embeddings: true
+  vector_db:
+    provider: chroma
+    persist_directory: data/vector_db
+    summary_collection: paper_summaries

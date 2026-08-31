@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 
@@ -15,6 +16,10 @@ USER_PROMPT = "LLM을 활용한 논문들이 뭐가 있는지 찾아줘"
 
 
 class KeywordToolTest(unittest.TestCase):
+    @unittest.skipUnless(
+        os.getenv("RUN_MODEL_INTEGRATION_TESTS") == "1",
+        "RUN_MODEL_INTEGRATION_TESTS=1일 때만 실제 Ollama 통합 테스트를 실행합니다.",
+    )
     def test_generates_keywords_with_user_prompt(self):
         """테스트 파일 상단의 사용자 입력으로 실제 Ollama 키워드를 생성한다."""
         result = generate_arxiv_keywords.invoke({"user_query": USER_PROMPT})

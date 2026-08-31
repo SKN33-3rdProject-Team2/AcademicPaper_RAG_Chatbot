@@ -23,3 +23,17 @@ __pycache__/
 Log/*.log
 Log/*.log.*
 
+# 중단된 요약을 재개하기 위한 로컬 청크 체크포인트
+data/temp_summary/
+
+# 중단된 번역을 재개하기 위한 로컬 청크 체크포인트
+data/temp_translation/
+
+# 번역·요약 및 Vector DB 로컬 산출물
+data/translations/
+data/summaries/
+data/vector_db/
+
+# PDF 렌더링 등 로컬 임시 산출물
+tmp/
+
