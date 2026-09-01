@@ -125,22 +125,29 @@ class SupervisorRouter:
             "분석",
             "deep research",
         )
+        remembered_candidates = [
+            dict(source)
+            for source in state.get("selection_candidates", [])
+            if isinstance(source, dict)
+        ]
         deep_search_candidates = [
             source
             for source in state.get("deep_search_candidates", [])
             if isinstance(source, dict)
         ]
+        selection_candidates = remembered_candidates or deep_search_candidates
+        selection_source = str(state.get("selection_source") or "").strip()
         number_matches = list(re.finditer(r"(\d+)\s*번", query))
         selected_numbers = list(
             dict.fromkeys(int(match.group(1)) for match in number_matches)
         )
         selected_by_number = any(
-            0 < number <= len(deep_search_candidates)
+            0 < number <= len(selection_candidates)
             for number in selected_numbers
         )
         selected_by_title = any(
             str(source.get("title") or "").strip().casefold() in query
-            for source in deep_search_candidates
+            for source in selection_candidates
             if str(source.get("title") or "").strip()
         )
         has_candidate_selection = selected_by_number or selected_by_title
@@ -162,10 +169,12 @@ class SupervisorRouter:
         )
 
         def candidate_id(number: int) -> str:
-            if not 0 < number <= len(deep_search_candidates):
+            if not 0 < number <= len(selection_candidates):
                 return ""
             return str(
-                deep_search_candidates[number - 1].get("paper_id") or ""
+                selection_candidates[number - 1].get("paper_id")
+                or selection_candidates[number - 1].get("id")
+                or ""
             ).strip()
 
         selected_candidate_ids = list(
@@ -182,7 +191,8 @@ class SupervisorRouter:
         # 파이프라인에 전달한다. 요약은 번역 결과를 사용하므로 번역을 포함한다.
         if selected_candidate_ids and (wants_translate or wants_summarize):
             steps: list[ExecutableRoute] = []
-            if wants_download:
+            should_download = wants_download or selection_source == "search"
+            if should_download:
                 steps.append("download")
             steps.extend(["extract", "translate"])
             if wants_summarize:
@@ -194,7 +204,7 @@ class SupervisorRouter:
                 reason="선택한 논문의 추출·번역·요약 파이프라인",
                 selected_paper_ids=selected_candidate_ids,
                 download_paper_ids=(
-                    selected_candidate_ids if wants_download else []
+                    selected_candidate_ids if should_download else []
                 ),
                 deep_search_paper_id=(
                     deep_target_id if asks_direct_research else ""
@@ -204,7 +214,7 @@ class SupervisorRouter:
         # "3번 5번 다운로드 후 5번 설명"처럼 한 요청 안에서 작업 대상이
         # 다른 경우, 다운로드용 복수 ID와 심층 질문용 단일 ID를 분리한다.
         if (
-            deep_search_candidates
+            selection_candidates
             and selected_candidate_ids
             and wants_download
             and asks_direct_research

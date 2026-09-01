@@ -66,6 +66,8 @@ class WorkflowState(TypedDict, total=False):
     selected_papers: list[dict[str, Any]]
     search_results: list[dict[str, Any]]
     library_results: list[dict[str, Any]]
+    selection_candidates: list[dict[str, Any]]
+    selection_source: str
     downloaded_paths: list[str]
     extracted_records: list[dict[str, Any]]
     translated_paths: list[str]

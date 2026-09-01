@@ -159,7 +159,12 @@ class ArxivSearchNode:
                 self.bot.save_papers(papers)
             except Exception:
                 pass
-        return {"search_results": papers, "node_history": ["search"]}
+        return {
+            "search_results": papers,
+            "selection_candidates": [_record(paper) for paper in papers],
+            "selection_source": "search",
+            "node_history": ["search"],
+        }
 
 
 class LocalLibraryNode:
@@ -181,6 +186,8 @@ class LocalLibraryNode:
         return {
             "paper_ids": [str(paper["id"]) for paper in papers],
             "library_results": papers,
+            "selection_candidates": [_record(paper) for paper in papers],
+            "selection_source": "library",
             "node_history": ["library"],
         }
 
@@ -426,6 +433,8 @@ class DeepSearchNode:
             "sources": [],
             "deep_search_references": [],
             "deep_search_candidates": candidates,
+            "selection_candidates": candidates,
+            "selection_source": "deep_search",
             "deep_search_selection_required": bool(candidates),
             "response": response,
             "node_history": ["deep_search"],
