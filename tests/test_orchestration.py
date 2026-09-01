@@ -89,12 +89,21 @@ class StateGraphTest(unittest.TestCase):
         router = SupervisorRouter(use_llm=True)
         cases = [
             ("내 서재에 저장된 논문 목록을 보여줘", ["library"]),
+            ("설명 가능한 논문이 뭐가 있어?", ["rag"]),
             ("저장된 요약을 근거와 출처를 붙여 설명해줘", ["rag"]),
             ("로컬 논문들을 비교해서 심층 분석해줘", ["rag"]),
         ]
         for query, expected in cases:
             with self.subTest(query=query):
                 self.assertEqual(router.decide(initial_state(query)).steps, expected)
+
+    def test_explainable_inventory_runs_rag_then_deep_research(self):
+        graph = build_graph(router=SupervisorRouter(use_llm=False), nodes=fake_nodes())
+        result = graph.invoke(
+            initial_state("설명 가능한 논문이 뭐가 있어?"),
+            config={"configurable": {"thread_id": "test-explainable-inventory"}},
+        )
+        self.assertEqual(result["node_history"], ["rag", "deep_research", "finish"])
 
     def test_empty_search_rebuilds_keywords_and_retries(self):
         search_calls = 0

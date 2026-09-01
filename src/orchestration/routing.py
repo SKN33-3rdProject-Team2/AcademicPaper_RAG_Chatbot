@@ -60,6 +60,9 @@ Rules:
    [keyword, search, download, extract, translate, summarize, rag]. Only
    include the stages actually implied by the request and skip stages whose
    artifacts already exist per "Available state".
+9. Treat conversational questions about which papers the assistant can explain
+   as requests to inspect existing RAG content first. Never start an external
+   search or download for those questions unless RAG returns no source.
 """
 
 
@@ -91,6 +94,25 @@ class SupervisorRouter:
             or state.get("search_results")
             or state.get("library_results")
         )
+
+        # In a chatbot, "설명 가능한 논문이 뭐가 있어?" asks what the
+        # assistant can currently explain. It is not an instruction to search,
+        # download, and process ten new papers. Inspect indexed RAG content
+        # first; the graph will hand a retrieved source to Deep Research and
+        # will run the external rebuild pipeline only when RAG has no source.
+        asks_explainable_inventory = (
+            "논문" in query
+            and any(
+                phrase in query
+                for phrase in ("설명 가능한", "설명할 수 있는", "설명해줄 수 있는")
+            )
+            and any(term in query for term in ("뭐가", "무엇", "어떤", "있어", "있나", "보여"))
+        )
+        if asks_explainable_inventory:
+            return SupervisorDecision(
+                steps=["rag"],
+                reason="보유 문서 중 설명 가능한 논문 확인",
+            )
 
         # A request can chain multiple stages in one sentence (e.g. "찾아서
         # 번역 요약해주고 설명해줘" = search + translate + summarize + explain).
