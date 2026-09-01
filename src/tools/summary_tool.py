@@ -13,6 +13,8 @@ from pathlib import Path
 from log import AppLogger, LogCode
 from services.generation_options import resolve_float, resolve_nonnegative_int, resolve_positive_int
 from services.model_config_service import load_task_config
+from services.nvidia_service import generate as nvidia_generate
+from services.nvidia_service import is_available as nvidia_is_available
 from services.ollama_service import OllamaServiceError, check_connection, generate
 from services.summary_markdown_store import MarkdownSummaryArtifactStore, SummaryArtifactError, SummaryArtifactStore
 from services.summary_checkpoint_service import SummaryCheckpointError, SummaryCheckpointStore
@@ -151,7 +153,11 @@ class SummaryTool:
         generator: Callable[..., str] | None = None,
     ) -> None:
         self._progress = progress
-        self._generator = generator or generate
+        # provider 로 어디에 물어볼지 고른다. 기본값은 지금까지 쓰던 ollama 다.
+        # nvidia_service.generate 는 ollama 쪽과 같은 모양이라 그대로 갈아 끼운다.
+        self._provider = str(SUMMARY_CONFIG.get("provider", "ollama")).strip().casefold()
+        default_generator = nvidia_generate if self._provider == "nvidia" else generate
+        self._generator = generator or default_generator
         self._model = str(SUMMARY_CONFIG["model"])
         self._temperature = resolve_float("summary.temperature", SUMMARY_CONFIG["temperature"] if temperature is None else temperature, minimum=0.0, maximum=2.0)
         self._max_tokens = resolve_positive_int("summary.max_tokens", SUMMARY_CONFIG["max_tokens"] if max_tokens is None else max_tokens)
@@ -308,7 +314,11 @@ class SummaryTool:
 
     def _summarize(self, *, paper_id: str, title: str, markdown: str, source: str) -> PaperSummary:
         """읽어 온 번역 Markdown을 요약하고 산출물과 Vector DB에 저장한다."""
-        if not check_connection(model=self._model):
+        if self._provider == "nvidia":
+            if not nvidia_is_available():
+                logger.log(LogCode.SUMMARY_REJECTED, paper_id=paper_id, reason="nvidia_key_missing", retryable=False, model=self._model)
+                raise SummaryError("NVIDIA API 키가 없어 요약 모델을 쓸 수 없습니다. .env 의 NVIDIA_API_KEY 를 확인해 주세요.")
+        elif not check_connection(model=self._model):
             logger.log(LogCode.SUMMARY_REJECTED, paper_id=paper_id, reason="ollama_model_unavailable", retryable=False, model=self._model)
             raise SummaryError(f"Ollama 서버에서 요약 모델 '{self._model}'을 사용할 수 없습니다. Ollama 실행 상태와 모델 설치 여부를 확인해 주세요.")
         logger.log(
