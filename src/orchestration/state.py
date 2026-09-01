@@ -52,6 +52,10 @@ class WorkflowState(TypedDict, total=False):
 
     rag_answer: str
     sources: list[dict[str, Any]]
+    deep_research_status: str
+    deep_research_answer: str
+    deep_research_sources: list[Any]
+    deep_research_paper_id: str
     response: str
 
     node_history: Annotated[list[str], operator.add]

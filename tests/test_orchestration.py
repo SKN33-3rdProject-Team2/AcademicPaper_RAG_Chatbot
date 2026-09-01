@@ -19,7 +19,7 @@ from orchestration.evaluation import (
     retrieval_recall_at_k,
     route_sequence_accuracy,
 )
-from orchestration.adapters import KeywordNode
+from orchestration.adapters import DeepResearchNode, KeywordNode
 from orchestration.graph import build_graph
 from orchestration.rag_chain import SummaryRAGChain
 from orchestration.routing import SupervisorRouter
@@ -55,8 +55,18 @@ def fake_nodes():
         "extract": lambda state: {"node_history": ["extract"]},
         "translate": lambda state: {"node_history": ["translate"]},
         "summarize": lambda state: {"node_history": ["summarize"]},
-        "rag": lambda state: {"response": "RAG answer", "node_history": ["rag"]},
-        "deep_research": lambda state: {"response": "Deep answer", "node_history": ["deep_research"]},
+        "rag": lambda state: {
+            "response": "RAG answer",
+            "sources": [{"paper_id": "paper-1", "title": "RAG Paper"}],
+            "node_history": ["rag"],
+        },
+        "deep_research": lambda state: {
+            "response": "일부 내용은 확인할 수 없지만 근거 기반으로 설명했습니다.",
+            "deep_research_status": "success",
+            "deep_research_answer": "일부 내용은 확인할 수 없지만 근거 기반으로 설명했습니다.",
+            "deep_research_sources": ["paper evidence"],
+            "node_history": ["deep_research"],
+        },
     }
 
 
@@ -80,7 +90,7 @@ class StateGraphTest(unittest.TestCase):
         cases = [
             ("내 서재에 저장된 논문 목록을 보여줘", ["library"]),
             ("저장된 요약을 근거와 출처를 붙여 설명해줘", ["rag"]),
-            ("로컬 논문들을 비교해서 심층 분석해줘", ["deep_research"]),
+            ("로컬 논문들을 비교해서 심층 분석해줘", ["rag"]),
         ]
         for query, expected in cases:
             with self.subTest(query=query):
@@ -129,22 +139,60 @@ class StateGraphTest(unittest.TestCase):
         self.assertIn("retrieval augmented generation", prompts[0])
         self.assertIn("겹치지 않는 대체 학술 용어", prompts[0])
 
-    def test_rag_without_sources_falls_back_to_deep_research(self):
+    def test_rag_without_sources_rebuilds_paper_then_runs_deep_research(self):
+        rag_calls = 0
+
+        def rag_node(state):
+            nonlocal rag_calls
+            rag_calls += 1
+            return {
+                "response": "근거를 찾지 못했습니다." if rag_calls == 1 else "RAG answer",
+                "sources": [] if rag_calls == 1 else [{"paper_id": "paper-1"}],
+                "node_history": ["rag"],
+            }
+
         nodes = fake_nodes()
-        nodes["rag"] = lambda state: {
-            "response": "근거를 찾지 못했습니다.",
-            "sources": [],
-            "node_history": ["rag"],
+        nodes["rag"] = rag_node
+        nodes["download"] = lambda state: {
+            "paper_ids": ["paper-1"],
+            "downloaded_paths": ["paper-1.pdf"],
+            "node_history": ["download"],
+        }
+        nodes["extract"] = lambda state: {
+            "extracted_records": [{"id": "paper-1", "content": "body"}],
+            "node_history": ["extract"],
+        }
+        nodes["translate"] = lambda state: {
+            "translated_paths": ["paper-1-ko.md"],
+            "node_history": ["translate"],
+        }
+        nodes["summarize"] = lambda state: {
+            "summaries": [{"id": "paper-1"}],
+            "node_history": ["summarize"],
         }
         graph = build_graph(router=SupervisorRouter(use_llm=False), nodes=nodes)
         result = graph.invoke(
             initial_state("저장된 요약을 근거와 출처를 붙여 설명해줘"),
             config={"configurable": {"thread_id": "test-rag-fallback"}},
         )
-        self.assertEqual(result["node_history"], ["rag", "deep_research", "finish"])
-        self.assertEqual(result["response"], "Deep answer")
+        self.assertEqual(
+            result["node_history"],
+            [
+                "rag",
+                "keyword",
+                "search",
+                "download",
+                "extract",
+                "translate",
+                "summarize",
+                "rag",
+                "deep_research",
+                "finish",
+            ],
+        )
+        self.assertIn("근거 기반으로 설명했습니다", result["response"])
 
-    def test_rag_refusal_with_sources_also_falls_back(self):
+    def test_rag_with_sources_runs_deep_research_even_when_rag_refuses(self):
         nodes = fake_nodes()
         nodes["rag"] = lambda state: {
             "rag_answer": "저장된 근거가 부족하여 답할 수 없습니다.",
@@ -158,6 +206,106 @@ class StateGraphTest(unittest.TestCase):
             config={"configurable": {"thread_id": "test-rag-refusal-fallback"}},
         )
         self.assertEqual(result["node_history"], ["rag", "deep_research", "finish"])
+
+    def test_deep_research_receives_the_rag_selected_paper(self):
+        class FakeDeepResearchAgent:
+            def __init__(self):
+                self.selected = []
+
+            def select_paper(self, selection):
+                self.selected.append(selection)
+                return {
+                    "status": "selected",
+                    "message": "selected",
+                    "paper": {"id": "paper-1", "title": "RAG Paper"},
+                }
+
+            def ask(self, question):
+                return {
+                    "status": "success",
+                    "message": "answered",
+                    "answer": "Deep answer",
+                    "sources": ["paper evidence"],
+                    "paper": {"id": "paper-1", "title": "RAG Paper"},
+                }
+
+        agent = FakeDeepResearchAgent()
+        node = DeepResearchNode(factory=lambda: agent)
+        result = node(
+            {
+                "query": "방법론을 설명해줘",
+                "sources": [{"paper_id": "paper-1", "title": "RAG Paper"}],
+            }
+        )
+        self.assertEqual(agent.selected, ["paper-1"])
+        self.assertEqual(result["deep_research_status"], "success")
+        self.assertEqual(result["deep_research_paper_id"], "paper-1")
+        self.assertEqual(result["deep_research_sources"], ["paper evidence"])
+
+    def test_deep_research_without_evidence_returns_to_supervisor_search(self):
+        deep_calls = 0
+
+        def deep_research_node(state):
+            nonlocal deep_calls
+            deep_calls += 1
+            if deep_calls == 1:
+                return {
+                    "response": "설명 근거가 없습니다.",
+                    "deep_research_status": "success",
+                    "deep_research_answer": "설명 근거가 없습니다.",
+                    "deep_research_sources": [],
+                    "node_history": ["deep_research"],
+                }
+            return {
+                "response": "추가 논문을 근거로 설명했습니다.",
+                "deep_research_status": "success",
+                "deep_research_answer": "추가 논문을 근거로 설명했습니다.",
+                "deep_research_sources": ["additional evidence"],
+                "node_history": ["deep_research"],
+            }
+
+        nodes = fake_nodes()
+        nodes["deep_research"] = deep_research_node
+        nodes["download"] = lambda state: {
+            "paper_ids": ["paper-2"],
+            "downloaded_paths": ["paper-2.pdf"],
+            "node_history": ["download"],
+        }
+        nodes["extract"] = lambda state: {
+            "extracted_records": [{"id": "paper-2", "content": "body"}],
+            "node_history": ["extract"],
+        }
+        nodes["translate"] = lambda state: {
+            "translated_paths": ["paper-2-ko.md"],
+            "node_history": ["translate"],
+        }
+        nodes["summarize"] = lambda state: {
+            "summaries": [{"id": "paper-2"}],
+            "node_history": ["summarize"],
+        }
+        graph = build_graph(router=SupervisorRouter(use_llm=False), nodes=nodes)
+        result = graph.invoke(
+            initial_state("저장된 논문을 심층 분석해줘"),
+            config={"configurable": {"thread_id": "test-deep-research-retry"}},
+        )
+        self.assertEqual(
+            result["node_history"],
+            [
+                "rag",
+                "deep_research",
+                "keyword",
+                "search",
+                "download",
+                "extract",
+                "translate",
+                "summarize",
+                "rag",
+                "deep_research",
+                "finish",
+            ],
+        )
+        self.assertEqual(result["retry_counts"]["deep_research"], 1)
+        self.assertIn("추가 논문을 근거로 설명했습니다", result["response"])
 
     def test_missing_translation_input_inserts_extract_node(self):
         class TranslateOnlyRouter:
