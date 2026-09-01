@@ -2,11 +2,30 @@
 
 from __future__ import annotations
 
-import operator
 from typing import Annotated, Any, Literal, TypedDict
 
 from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.graph.message import add_messages
+
+
+_RESET = "__RESET__"
+
+
+def _accumulate(current: list[str], update: list[str]) -> list[str]:
+    """Append like ``operator.add``, but let a turn's initial input reset the log.
+
+    The graph loops through many nodes within a single ``invoke`` call, so
+    node returns must accumulate onto this channel. Across separate
+    ``invoke`` calls that share a ``thread_id`` (a multi-turn conversation),
+    the checkpointer keeps applying this same reducer to the new turn's
+    input, so a plain ``operator.add`` would carry the previous turn's
+    history forward forever. ``initial_state`` marks each new turn with a
+    leading ``_RESET`` sentinel so the log actually starts empty per turn.
+    """
+
+    if update and update[0] == _RESET:
+        return list(update[1:])
+    return list(current) + list(update)
 
 
 Route = Literal[
@@ -51,7 +70,6 @@ class WorkflowState(TypedDict, total=False):
     summaries: list[dict[str, Any]]
 
     rag_answer: str
-    rag_selection_required: bool
     sources: list[dict[str, Any]]
     deep_research_status: str
     deep_research_answer: str
@@ -59,8 +77,8 @@ class WorkflowState(TypedDict, total=False):
     deep_research_paper_id: str
     response: str
 
-    node_history: Annotated[list[str], operator.add]
-    errors: Annotated[list[str], operator.add]
+    node_history: Annotated[list[str], _accumulate]
+    errors: Annotated[list[str], _accumulate]
 
 
 def initial_state(
@@ -69,7 +87,7 @@ def initial_state(
     thread_id: str = "default",
     paper_ids: list[str] | None = None,
     max_retries: int = 1,
-    max_steps: int = 12,
+    max_steps: int = 20,
 ) -> WorkflowState:
     """Create the minimal valid state accepted by the compiled graph."""
 
@@ -85,6 +103,17 @@ def initial_state(
         "retry_counts": {},
         "max_retries": max(0, max_retries),
         "max_steps": max(1, max_steps),
-        "node_history": [],
-        "errors": [],
+        "node_history": [_RESET],
+        "errors": [_RESET],
+        # Per-turn outputs: these are plain (non-reducer) fields, so a prior
+        # turn's value would otherwise sit in the checkpoint untouched and
+        # leak into a turn whose plan never sets them (e.g. a "library"-only
+        # turn re-showing a previous turn's RAG answer/sources).
+        "response": "",
+        "sources": [],
+        "rag_answer": "",
+        "deep_research_status": "",
+        "deep_research_answer": "",
+        "deep_research_sources": [],
+        "deep_research_paper_id": "",
     }

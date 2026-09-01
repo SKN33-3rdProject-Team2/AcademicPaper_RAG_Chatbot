@@ -2,11 +2,29 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from orchestration.state import WorkflowState
+
+
+_COUNT_PATTERN = re.compile(r"(\d+)\s*(개|편|papers?)", re.IGNORECASE)
+_LATEST_TERMS = ("최신", "최근", "latest", "recent", "newest")
+
+# The local keyword model sometimes leaks the request's action verbs (부탁한
+# "번역"/"요약"/"설명" 같은 동작) into the generated search terms instead of
+# sticking to the actual topic. Strip those before they pollute the arXiv
+# query with generic OR-clauses that match almost anything.
+_GENERIC_KEYWORD_BLOCKLIST = {
+    "recent", "recently", "latest", "newest", "new",
+    "paper", "papers", "article", "articles", "study", "studies", "research",
+    "analysis", "analyze", "analyses",
+    "summary", "summaries", "summarization", "summarize",
+    "translation", "translate", "translated",
+    "search", "find", "explain", "explanation", "explained",
+}
 
 
 class NodeExecutionError(RuntimeError):
@@ -115,9 +133,29 @@ class ArxivSearchNode:
 
     def __call__(self, state: WorkflowState) -> dict[str, Any]:
         terms = state.get("keywords") or [state["query"]]
+        filtered_terms = [
+            term for term in terms if term.strip().casefold() not in _GENERIC_KEYWORD_BLOCKLIST
+        ]
+        terms = filtered_terms or terms
         query = " OR ".join(f'"{term}"' for term in terms)
-        papers = self.bot.search_papers(query, max_results=self._max_results)
-        return {"search_results": list(papers), "node_history": ["search"]}
+
+        raw_query = state["query"]
+        count_match = _COUNT_PATTERN.search(raw_query)
+        max_results = int(count_match.group(1)) if count_match else self._max_results
+        max_results = max(1, min(max_results, 15))
+        sort_by = "n" if any(term in raw_query for term in _LATEST_TERMS) else "r"
+
+        papers = list(self.bot.search_papers(query, sort_by=sort_by, max_results=max_results))
+        # PaperExtractor resolves paper_id -> PDF file by looking the id up in
+        # saved_papers.db, so search results must be persisted immediately —
+        # otherwise a later download/extract step can save the PDF but never
+        # find it again by id.
+        if papers and hasattr(self.bot, "save_papers"):
+            try:
+                self.bot.save_papers(papers)
+            except Exception:
+                pass
+        return {"search_results": papers, "node_history": ["search"]}
 
 
 class LocalLibraryNode:
@@ -166,9 +204,13 @@ class DownloadNode:
         paths: list[str] = []
         paper_ids: list[str] = []
         for paper in papers:
-            path = self.bot.download_pdf(paper)
-            if path:
-                paths.append(str(path))
+            # download_pdf returns a status code ("success"/"exists"/"error"/
+            # "no_url"), not a file path — only "error"/"no_url" are real
+            # failures, so a paper counts as available whenever the file is
+            # now on disk (either just downloaded or already present).
+            status = self.bot.download_pdf(paper)
+            if status in ("success", "exists"):
+                paths.append(f"{paper.get('title', paper.get('id', ''))}: {status}")
                 if paper.get("id"):
                     paper_ids.append(str(paper["id"]))
         return {
@@ -233,16 +275,26 @@ class TranslateNode:
             ]
         if not records:
             raise NodeExecutionError("번역 전에 논문 본문 추출이 필요합니다.")
-        paths = [
-            str(
-                self.translator.translate_paper(
+
+        paths: list[str] = []
+        failures: list[str] = []
+        for record in records:
+            title = str(record.get("title", "")) or str(record.get("id", ""))
+            try:
+                path = self.translator.translate_paper(
                     record["content"],
                     paper_id=str(record.get("id", "")),
                     title=str(record.get("title", "")),
                 )
+            except Exception as exc:  # a single paper's failure must not drop the rest
+                failures.append(f"{title}: {exc}")
+                continue
+            paths.append(str(path))
+
+        if not paths:
+            raise NodeExecutionError(
+                "모든 논문 번역에 실패했습니다: " + "; ".join(failures)
             )
-            for record in records
-        ]
         return {"translated_paths": paths, "node_history": ["translate"]}
 
 
@@ -261,10 +313,23 @@ class SummaryNode:
         paths = [Path(path) for path in state.get("translated_paths", [])]
         if not paths:
             raise NodeExecutionError("요약 전에 번역 Markdown 생성이 필요합니다.")
-        summaries = [_record(self.tool.summarize_file(path)) for path in paths]
-        for summary in summaries:
+
+        summaries: list[dict[str, Any]] = []
+        failures: list[str] = []
+        for path in paths:
+            try:
+                summary = _record(self.tool.summarize_file(path))
+            except Exception as exc:  # one paper's failure must not drop the rest
+                failures.append(f"{path.name}: {exc}")
+                continue
             if summary.get("markdown_path") is not None:
                 summary["markdown_path"] = str(summary["markdown_path"])
+            summaries.append(summary)
+
+        if not summaries:
+            raise NodeExecutionError(
+                "모든 논문 요약에 실패했습니다: " + "; ".join(failures)
+            )
         return {"summaries": summaries, "node_history": ["summarize"]}
 
 

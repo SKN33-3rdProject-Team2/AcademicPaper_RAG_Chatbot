@@ -92,7 +92,11 @@ Your task is to convert the user's research topic into exactly 6 concise, highly
 3. DO NOT use vague conversational phrases, adjectives, opinions, or unrelated general terms.
 4. Use precise academic or technical terminology appropriate for arXiv.
 5. Each keyword must be a short English phrase of 1 to 3 words and suitable for an arXiv search.
-6. Return JSON only in this exact shape, without explanations or additional fields:
+6. The user's message may also ask you to translate, summarize, download, or
+   explain the papers afterward — IGNORE those instructions entirely. Only
+   extract keywords describing the research subject itself. Never output a
+   keyword like "translation", "summary", "analysis", "recent", or "papers".
+7. Return JSON only in this exact shape, without explanations or additional fields:
 {{"keywords": ["keyword one", "keyword two", "keyword three", "keyword four", "keyword five", "keyword six"]}}
 
 User topic: {raw_query}"""
