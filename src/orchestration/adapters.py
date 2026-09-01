@@ -79,7 +79,15 @@ class KeywordNode:
         return self._tool
 
     def __call__(self, state: WorkflowState) -> dict[str, Any]:
-        result = self.tool.generate_keywords(state["query"])
+        topic = state["query"]
+        if int(state.get("retry_counts", {}).get("search", 0)) > 0:
+            previous = ", ".join(state.get("keywords", []))
+            topic = (
+                f"{topic}\n"
+                "이전 검색 결과가 없었습니다. 같은 의미를 유지하되 "
+                f"다음 표현과 겹치지 않는 대체 학술 용어를 생성하세요: {previous}"
+            )
+        result = self.tool.generate_keywords(topic)
         keywords = [str(item) for item in result.get("keywords", []) if str(item).strip()]
         if not keywords:
             raise NodeExecutionError("검색 키워드를 생성하지 못했습니다.")

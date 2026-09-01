@@ -19,9 +19,11 @@ from orchestration.evaluation import (
     retrieval_recall_at_k,
     route_sequence_accuracy,
 )
+from orchestration.adapters import KeywordNode
 from orchestration.graph import build_graph
 from orchestration.rag_chain import SummaryRAGChain
 from orchestration.routing import SupervisorRouter
+from orchestration.routing import SupervisorDecision
 from orchestration.state import initial_state
 
 
@@ -83,6 +85,115 @@ class StateGraphTest(unittest.TestCase):
         for query, expected in cases:
             with self.subTest(query=query):
                 self.assertEqual(router.decide(initial_state(query)).steps, expected)
+
+    def test_empty_search_rebuilds_keywords_and_retries(self):
+        search_calls = 0
+
+        def search_node(state):
+            nonlocal search_calls
+            search_calls += 1
+            papers = [] if search_calls == 1 else [{"id": "paper-2", "title": "Retry Paper"}]
+            return {"search_results": papers, "node_history": ["search"]}
+
+        nodes = fake_nodes()
+        nodes["search"] = search_node
+        graph = build_graph(router=SupervisorRouter(use_llm=False), nodes=nodes)
+        result = graph.invoke(
+            initial_state("arxiv에서 agent 논문 검색해줘"),
+            config={"configurable": {"thread_id": "test-search-retry"}},
+        )
+        self.assertEqual(
+            result["node_history"],
+            ["keyword", "search", "keyword", "search", "finish"],
+        )
+        self.assertEqual(result["retry_counts"]["search"], 1)
+        self.assertIn("Retry Paper", result["response"])
+
+    def test_keyword_retry_requests_alternative_terms(self):
+        prompts = []
+
+        class FakeKeywordTool:
+            def generate_keywords(self, prompt):
+                prompts.append(prompt)
+                return {"keywords": ["alternative RAG"]}
+
+        node = KeywordNode(factory=FakeKeywordTool)
+        result = node(
+            {
+                "query": "RAG 논문",
+                "keywords": ["retrieval augmented generation"],
+                "retry_counts": {"search": 1},
+            }
+        )
+        self.assertEqual(result["keywords"], ["alternative RAG"])
+        self.assertIn("retrieval augmented generation", prompts[0])
+        self.assertIn("겹치지 않는 대체 학술 용어", prompts[0])
+
+    def test_rag_without_sources_falls_back_to_deep_research(self):
+        nodes = fake_nodes()
+        nodes["rag"] = lambda state: {
+            "response": "근거를 찾지 못했습니다.",
+            "sources": [],
+            "node_history": ["rag"],
+        }
+        graph = build_graph(router=SupervisorRouter(use_llm=False), nodes=nodes)
+        result = graph.invoke(
+            initial_state("저장된 요약을 근거와 출처를 붙여 설명해줘"),
+            config={"configurable": {"thread_id": "test-rag-fallback"}},
+        )
+        self.assertEqual(result["node_history"], ["rag", "deep_research", "finish"])
+        self.assertEqual(result["response"], "Deep answer")
+
+    def test_rag_refusal_with_sources_also_falls_back(self):
+        nodes = fake_nodes()
+        nodes["rag"] = lambda state: {
+            "rag_answer": "저장된 근거가 부족하여 답할 수 없습니다.",
+            "response": "저장된 근거가 부족하여 답할 수 없습니다.",
+            "sources": [{"id": "weak-source"}],
+            "node_history": ["rag"],
+        }
+        graph = build_graph(router=SupervisorRouter(use_llm=False), nodes=nodes)
+        result = graph.invoke(
+            initial_state("저장된 요약을 근거와 출처를 붙여 설명해줘"),
+            config={"configurable": {"thread_id": "test-rag-refusal-fallback"}},
+        )
+        self.assertEqual(result["node_history"], ["rag", "deep_research", "finish"])
+
+    def test_missing_translation_input_inserts_extract_node(self):
+        class TranslateOnlyRouter:
+            def decide(self, state):
+                return SupervisorDecision(steps=["translate"], reason="번역만 계획")
+
+        nodes = fake_nodes()
+        nodes["extract"] = lambda state: {
+            "extracted_records": [{"id": "paper-1", "content": "paper body"}],
+            "node_history": ["extract"],
+        }
+        nodes["translate"] = lambda state: {
+            "translated_paths": ["paper-1-ko.md"],
+            "node_history": ["translate"],
+        }
+        graph = build_graph(router=TranslateOnlyRouter(), nodes=nodes)
+        result = graph.invoke(
+            initial_state("번역", paper_ids=["paper-1"]),
+            config={"configurable": {"thread_id": "test-translation-prerequisite"}},
+        )
+        self.assertEqual(result["node_history"], ["extract", "translate", "finish"])
+
+    def test_retry_limit_stops_an_infinite_search_loop(self):
+        nodes = fake_nodes()
+        nodes["search"] = lambda state: {"search_results": [], "node_history": ["search"]}
+        graph = build_graph(router=SupervisorRouter(use_llm=False), nodes=nodes)
+        result = graph.invoke(
+            initial_state("arxiv에서 없는 논문 검색해줘", max_retries=1),
+            config={"configurable": {"thread_id": "test-search-limit"}},
+        )
+        self.assertEqual(
+            result["node_history"],
+            ["keyword", "search", "keyword", "search", "finish"],
+        )
+        self.assertTrue(result["errors"])
+        self.assertIn("찾지 못했습니다", result["response"])
 
 
 class RAGChainTest(unittest.TestCase):
