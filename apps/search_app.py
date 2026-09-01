@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 from html import escape
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
 import streamlit as st
 
-from apps.ui import render_page_heading
+from apps.ui import image_data_url, render_page_heading
 from feature.search import ArxivSearchBot
 
 
 SEARCH_RESULTS_KEY = "arxiv_search_results"
+LOGO_PATH = Path(__file__).with_name("paper_scholar_logo.png")
 
 
 @st.cache_resource(show_spinner=False)
@@ -22,13 +24,11 @@ def _get_search_bot() -> ArxivSearchBot:
 
 def render_search_page() -> None:
     """검색 결과를 보여주고 사용자가 선택한 논문만 저장한다."""
+    logo_src = image_data_url(str(LOGO_PATH), LOGO_PATH.stat().st_mtime)
     st.markdown(
-        """
+        f"""
         <div class="scholar-hero">
-            <h1 class="scholar-logo" aria-label="Paper Scholar">
-                <span class="blue">P</span><span class="red">a</span><span class="yellow">p</span><span class="blue">e</span><span class="green">r</span>
-                <span class="dark">Scholar</span>
-            </h1>
+            <img class="scholar-logo-image" src="{logo_src}" alt="Paper Scholar">
             <p>학술 논문을 검색하고 필요한 자료를 내 서재에 저장하세요.</p>
         </div>
         """,
@@ -127,6 +127,6 @@ def render_search_page() -> None:
             selected = [paper_by_id[paper_id] for paper_id in selected_ids]
             message = _get_search_bot().save_papers(selected)
             st.success(message)
-            st.info("저장한 논문은 ‘논문 리스트’에서 확인할 수 있습니다.")
+            st.info("저장한 논문은 ‘내 서재’에서 확인할 수 있습니다.")
         except Exception as exc:
             st.error(f"논문 저장 중 오류가 발생했습니다: {exc}")
