@@ -53,12 +53,31 @@ def _load_artifacts() -> list[dict[str, Any]]:
     return sorted(artifacts, key=lambda item: item["title"].lower())
 
 
-def _show_markdown(label: str, path: Path | None) -> None:
-    st.subheader(label)
+def _document_headings(markdown: str) -> list[tuple[int, str]]:
+    """문서 탐색용으로 2·3단계 제목만 추출한다."""
+    headings: list[tuple[int, str]] = []
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("### "):
+            headings.append((3, stripped[4:].strip()))
+        elif stripped.startswith("## "):
+            headings.append((2, stripped[3:].strip()))
+    return headings
+
+
+def _show_markdown(label: str, path: Path | None, reader_key: str) -> None:
     if path is None or not path.exists():
         st.warning(f"{label} 파일이 없습니다.")
         return
-    st.markdown(_read_markdown(str(path), path.stat().st_mtime))
+    content = _read_markdown(str(path), path.stat().st_mtime)
+    headings = _document_headings(content)
+    if headings:
+        with st.expander("문서 구성 보기"):
+            for level, heading in headings[:24]:
+                indent = "&nbsp;&nbsp;&nbsp;&nbsp;" if level == 3 else ""
+                st.markdown(f"{indent}• {escape(heading)}", unsafe_allow_html=True)
+    with st.container(border=True, key=reader_key):
+        st.markdown(content)
 
 
 def render_translation_summary_page() -> None:
@@ -79,29 +98,31 @@ def render_translation_summary_page() -> None:
         format_func=lambda key: artifact_by_key[key]["title"],
     )
     selected = artifact_by_key[selected_key]
+    has_translation = "translation" in selected
+    has_summary = "summary" in selected
     st.markdown(
         f"""
         <div class="paper-detail-card">
-            <h2>{escape(str(selected['title']))}</h2>
-            <p>확인할 문서를 아래에서 선택하세요.</p>
+            <h2 title="{escape(str(selected['title']))}">{escape(str(selected['title']))}</h2>
+            <div class="paper-meta">
+                <span class="document-status {'status-ready' if has_summary else 'status-missing'}">
+                    요약본 {'있음' if has_summary else '없음'}
+                </span>
+                <span class="document-status {'status-ready' if has_translation else 'status-missing'}">
+                    번역본 {'있음' if has_translation else '없음'}
+                </span>
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    first, second = st.columns(2)
-    with first:
-        show_translation = st.checkbox(
-            "논문 번역본 보기", value=True, disabled="translation" not in selected
+    summary_tab, translation_tab = st.tabs(["요약본", "전체 번역본"])
+    with summary_tab:
+        _show_markdown("논문 요약본", selected.get("summary"), "document_reader_summary")
+    with translation_tab:
+        _show_markdown(
+            "논문 번역본",
+            selected.get("translation"),
+            "document_reader_translation",
         )
-    with second:
-        show_summary = st.checkbox("논문 요약본 보기", disabled="summary" not in selected)
-
-    if not show_translation and not show_summary:
-        st.info("확인할 문서를 체크해 주세요.")
-        return
-    if show_translation:
-        _show_markdown("논문 번역본", selected.get("translation"))
-    if show_summary:
-        st.divider()
-        _show_markdown("논문 요약본", selected.get("summary"))

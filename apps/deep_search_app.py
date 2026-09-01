@@ -37,8 +37,8 @@ def _reset_chat() -> None:
         {
             "role": "assistant",
             "content": (
-                "논문 검색, 서재 조회, 번역·요약, RAG 및 심층 분석을 도와드립니다. "
-                "원하는 작업을 자연어로 말씀해 주세요."
+                "안녕하세요. 논문 검색부터 서재 조회, 번역·요약, 심층 분석까지 "
+                "도와드릴게요. 아래에서 논문을 선택하거나 원하는 작업을 자연어로 말씀해 주세요."
             ),
         }
     ]
@@ -97,6 +97,16 @@ def _extracted_paper_options() -> dict[str, str]:
     }
 
 
+def _render_sources(sources: list[dict]) -> None:
+    """답변 출처를 본문과 분리해 필요할 때 펼쳐 본다."""
+    if not sources:
+        return
+    with st.expander(f"참고한 출처 {len(sources)}개"):
+        for index, source in enumerate(sources, start=1):
+            label = source.get("title") or source.get("paper_id") or source.get("label")
+            st.markdown(f"{index}. {label or '출처 정보 없음'}")
+
+
 def render_deep_search_page() -> None:
     """대화 내역을 표시하고 질문을 Supervisor Graph로 전달한다."""
     render_page_heading(
@@ -107,56 +117,71 @@ def render_deep_search_page() -> None:
         _reset_chat()
 
     paper_options = _extracted_paper_options()
-    selected_paper_id = st.selectbox(
-        "질문할 논문 선택",
-        options=[None, *paper_options],
-        format_func=lambda paper_id: (
-            "선택하지 않음" if paper_id is None else paper_options[paper_id]
-        ),
-        help="본문 기반 질의응답은 한 번에 논문 한 편만 대상으로 합니다.",
-    )
+    with st.container(border=True, key="deep_search_controls"):
+        selector_column, reset_column = st.columns([4.8, 1.2])
+        with selector_column:
+            selected_paper_id = st.selectbox(
+                "분석할 논문",
+                options=[None, *paper_options],
+                format_func=lambda paper_id: (
+                    "논문을 선택하지 않고 질문하기"
+                    if paper_id is None
+                    else paper_options[paper_id]
+                ),
+                help="본문 기반 질의응답은 한 번에 논문 한 편만 대상으로 합니다.",
+            )
+        with reset_column:
+            st.markdown('<div class="control-button-label">대화 관리</div>', unsafe_allow_html=True)
+            new_chat = st.button("새 대화", use_container_width=True)
+        if selected_paper_id:
+            st.markdown(
+                f'<div class="selected-paper-note">선택된 논문 · '
+                f'{paper_options[selected_paper_id]}</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.caption("논문을 선택하지 않으면 Supervisor가 질문에 맞는 기능을 판단합니다.")
     st.session_state[SELECTED_PAPER_KEY] = selected_paper_id
 
-    controls, guide = st.columns([1.7, 8.3])
-    with controls:
-        new_chat = st.button("새 대화 시작", use_container_width=True)
-    with guide:
-        st.caption("대화 기록과 선택된 논문 정보는 현재 브라우저 세션에서 유지됩니다.")
     if new_chat:
         _reset_chat()
         st.rerun()
 
-    st.markdown("**이렇게 요청해 보세요**")
+    st.markdown('<div class="example-heading">이렇게 요청해 보세요</div>', unsafe_allow_html=True)
     examples = [
-        "보유 중인 논문 목록을 보여줘",
-        "Attention 관련 논문을 찾아줘",
-        "저장된 논문의 핵심 내용을 설명해줘",
+        ("내 서재 확인", "보유 중인 논문 목록을 보여줘"),
+        ("관련 논문 검색", "Attention 관련 논문을 찾아줘"),
+        ("핵심 내용 분석", "저장된 논문의 핵심 내용을 설명해줘"),
     ]
     example_columns = st.columns(3)
     selected_example = None
-    for column, example in zip(example_columns, examples):
+    for index, (column, example) in enumerate(zip(example_columns, examples)):
+        label, prompt_text = example
         with column:
-            if st.button(example, key=f"example_{example}", use_container_width=True):
-                selected_example = example
+            if st.button(
+                label,
+                key=f"deep_search_example_{index}",
+                help=prompt_text,
+                use_container_width=True,
+            ):
+                selected_example = prompt_text
 
     messages = st.session_state[MESSAGES_KEY]
     for message in messages:
-        with st.chat_message(message["role"]):
+        avatar = "👤" if message["role"] == "user" else "📘"
+        with st.chat_message(message["role"], avatar=avatar):
             st.markdown(message["content"])
-            for source in message.get("sources", []):
-                st.caption(
-                    f"출처: {source.get('title') or source.get('paper_id') or source.get('label')}"
-                )
+            _render_sources(message.get("sources", []))
 
     prompt = selected_example or st.chat_input("논문에 대해 질문해 주세요.")
     if not prompt:
         return
 
     messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
+    with st.chat_message("user", avatar="👤"):
         st.markdown(prompt)
 
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant", avatar="📘"):
         try:
             with st.spinner("Supervisor가 필요한 작업을 실행하고 있습니다..."):
                 response, sources = _run_supervisor(prompt)
@@ -166,10 +191,7 @@ def render_deep_search_page() -> None:
         # 맞춰 두면 대화 기록에도 고쳐진 채로 남아 다시 그릴 때 또 깨지지 않는다.
         response = normalize_math(response)
         st.markdown(response)
-        for source in sources:
-            st.caption(
-                f"출처: {source.get('title') or source.get('paper_id') or source.get('label')}"
-            )
+        _render_sources(sources)
 
     messages.append(
         {"role": "assistant", "content": response, "sources": sources}

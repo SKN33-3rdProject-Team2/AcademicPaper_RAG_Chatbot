@@ -28,15 +28,16 @@ from apps.deep_search_app import render_deep_search_page
 from apps.paper_list_app import render_paper_list_page
 from apps.search_app import render_search_page
 from apps.translation_summary_app import render_translation_summary_page
-from apps.ui import apply_global_styles
+from apps.ui import apply_global_styles, image_data_url
 
 
 PAGES = {
     "논문 검색": render_search_page,
-    "논문 리스트": render_paper_list_page,
+    "내 서재": render_paper_list_page,
     "논문 번역 및 요약": render_translation_summary_page,
     "딥서치": render_deep_search_page,
 }
+LOGO_PATH = PROJECT_ROOT / "apps" / "paper_scholar_logo.png"
 
 
 def main() -> None:
@@ -48,12 +49,15 @@ def main() -> None:
         initial_sidebar_state="expanded",
     )
     apply_global_styles()
+    logo_src = image_data_url(str(LOGO_PATH), LOGO_PATH.stat().st_mtime)
 
     with st.sidebar:
         st.markdown(
-            """
+            f"""
             <div class="sidebar-brand">
-                <span class="sidebar-brand-icon">🎓</span>
+                <span class="sidebar-brand-icon">
+                    <img src="{logo_src}" alt="Paper Scholar 책 로고">
+                </span>
                 <div>
                     <strong>Paper Scholar</strong>
                     <small>Academic RAG Assistant</small>
@@ -71,7 +75,7 @@ def main() -> None:
             """
             <div class="sidebar-help">
                 <strong>이용 순서</strong><br>
-                검색 → 저장 → 번역·요약 → 딥서치
+                검색 → 내 서재 → 번역·요약 → 딥서치
             </div>
             """,
             unsafe_allow_html=True,
