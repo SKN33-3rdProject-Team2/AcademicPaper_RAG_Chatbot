@@ -10,7 +10,8 @@ class LogCode(IntEnum):
 
     1xxx는 Ollama, 2xxx는 Keyword, 3xxx는 논문 검색,
     4xxx는 검색 논문 저장, 5xxx는 논문 추출·파싱,
-    6xxx는 번역, 7xxx는 요약, 8xxx는 Vector DB 저장을 나타낸다.
+    6xxx는 번역, 7xxx는 요약, 8xxx는 Vector DB 저장,
+    9xxx는 Deep Research를 나타낸다.
     x1xx는 시작·상태, x2xx는 성공, x4xx는 입력 거부, x5xx는 오류다.
     """
 
@@ -87,3 +88,15 @@ class LogCode(IntEnum):
     SUMMARY_STORAGE_STARTED = 8100
     SUMMARY_STORAGE_SUCCEEDED = 8200
     SUMMARY_STORAGE_FAILED = 8500
+
+    # 9xxx: Deep Research 논문 선택·질의응답·관련 논문 검색
+    DEEP_RESEARCH_LIST_STARTED = 9100
+    DEEP_RESEARCH_ANSWER_STARTED = 9101
+    DEEP_RESEARCH_RELATED_SEARCH_STARTED = 9102
+    DEEP_RESEARCH_LIST_SUCCEEDED = 9200
+    DEEP_RESEARCH_PAPER_SELECTED = 9201
+    DEEP_RESEARCH_ANSWER_SUCCEEDED = 9202
+    DEEP_RESEARCH_RELATED_SEARCH_SUCCEEDED = 9203
+    DEEP_RESEARCH_REQUEST_REJECTED = 9400
+    DEEP_RESEARCH_ANSWER_FAILED = 9500
+    DEEP_RESEARCH_RELATED_SEARCH_FAILED = 9501

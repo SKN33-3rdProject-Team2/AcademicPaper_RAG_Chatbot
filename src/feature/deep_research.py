@@ -14,6 +14,12 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Protocol
 
+from log import AppLogger, LogCode
+
+
+logger = AppLogger(__name__)
+
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "paper_list" / "saved_papers.db"
 DEFAULT_EXTRACT_DB_PATH = (
@@ -552,18 +558,21 @@ class DeepResearchBot:
         return {"status": status, "message": message, **data}
 
     def list_papers(self) -> dict[str, Any]:
+        logger.log(LogCode.DEEP_RESEARCH_LIST_STARTED)
         papers = self.repository.list_translated_papers()
         numbered = [
             {"number": index, **paper}
             for index, paper in enumerate(papers, start=1)
         ]
         if not numbered:
+            logger.log(LogCode.DEEP_RESEARCH_REQUEST_REJECTED, reason="no_papers")
             return self._result(
                 "empty",
                 "분석 가능한 추출 논문이 없습니다.",
                 papers=[],
                 count=0,
             )
+        logger.log(LogCode.DEEP_RESEARCH_LIST_SUCCEEDED, paper_count=len(numbered))
         return self._result(
             "success",
             f"분석 가능한 논문 {len(numbered)}개를 불러왔습니다.",
@@ -574,6 +583,7 @@ class DeepResearchBot:
     def select_paper(self, selection: str | int) -> dict[str, Any]:
         papers = self.repository.list_translated_papers()
         if not papers:
+            logger.log(LogCode.DEEP_RESEARCH_REQUEST_REJECTED, reason="no_papers")
             return self._result("empty", "선택할 추출 논문이 없습니다.")
 
         target: dict[str, Any] | None = None
@@ -603,6 +613,11 @@ class DeepResearchBot:
                     if len(candidates) == 1:
                         target = candidates[0]
                     elif len(candidates) > 1:
+                        logger.log(
+                            LogCode.DEEP_RESEARCH_REQUEST_REJECTED,
+                            reason="ambiguous_selection",
+                            candidate_count=len(candidates),
+                        )
                         return self._result(
                             "ambiguous",
                             "비슷한 제목이 여러 개입니다. 번호로 선택해 주세요.",
@@ -611,6 +626,12 @@ class DeepResearchBot:
 
         if target is None and number:
             if not 1 <= number <= len(papers):
+                logger.log(
+                    LogCode.DEEP_RESEARCH_REQUEST_REJECTED,
+                    reason="selection_out_of_range",
+                    selection=number,
+                    paper_count=len(papers),
+                )
                 return self._result(
                     "invalid_selection",
                     f"1번부터 {len(papers)}번 사이에서 선택해 주세요.",
@@ -618,6 +639,11 @@ class DeepResearchBot:
             target = papers[number - 1]
 
         if target is None:
+            logger.log(
+                LogCode.DEEP_RESEARCH_REQUEST_REJECTED,
+                reason="paper_not_found",
+                selection=str(selection),
+            )
             return self._result(
                 "invalid_selection",
                 "논문을 찾지 못했습니다. 번호, 제목 또는 논문 ID로 선택해 주세요.",
@@ -625,11 +651,21 @@ class DeepResearchBot:
 
         paper = self.repository.get_paper(target["id"])
         if paper is None:
+            logger.log(
+                LogCode.DEEP_RESEARCH_REQUEST_REJECTED,
+                reason="selected_paper_content_missing",
+                paper_id=target["id"],
+            )
             return self._result(
                 "not_found",
                 "선택한 논문의 추출 내용을 DB에서 불러오지 못했습니다.",
             )
         self.selected_paper = paper
+        logger.log(
+            LogCode.DEEP_RESEARCH_PAPER_SELECTED,
+            paper_id=paper["id"],
+            title=paper["title"],
+        )
         return self._result(
             "selected",
             f"'{paper['title']}' 논문을 선택했습니다. 궁금한 내용을 질문해 주세요.",
@@ -639,8 +675,10 @@ class DeepResearchBot:
     def ask(self, question: str) -> dict[str, Any]:
         question = question.strip()
         if not question:
+            logger.log(LogCode.DEEP_RESEARCH_REQUEST_REJECTED, reason="empty_question")
             return self._result("invalid_question", "질문 내용을 입력해 주세요.")
         if self.selected_paper is None:
+            logger.log(LogCode.DEEP_RESEARCH_REQUEST_REJECTED, reason="selection_required")
             paper_list = self.list_papers()
             return self._result(
                 "selection_required",
@@ -652,14 +690,30 @@ class DeepResearchBot:
             self.selected_paper.get("translation_text")
             or self.selected_paper.get("structured_summary")
         ):
+            logger.log(
+                LogCode.DEEP_RESEARCH_REQUEST_REJECTED,
+                reason="paper_content_missing",
+                paper_id=self.selected_paper.get("id"),
+            )
             return self._result(
                 "content_missing",
                 "선택한 논문에 질문에 사용할 추출 본문, 번역문 또는 요약이 없습니다.",
             )
 
+        logger.log(
+            LogCode.DEEP_RESEARCH_ANSWER_STARTED,
+            paper_id=self.selected_paper["id"],
+            question_length=len(question),
+        )
         try:
             raw_answer = self.answerer.answer(self.selected_paper, question)
         except Exception as error:
+            logger.log(
+                LogCode.DEEP_RESEARCH_ANSWER_FAILED,
+                paper_id=self.selected_paper["id"],
+                error_type=type(error).__name__,
+                error=str(error),
+            )
             return self._result(
                 "error",
                 f"답변을 만드는 중 오류가 발생했습니다: {error}",
@@ -667,6 +721,11 @@ class DeepResearchBot:
 
         answer_data = (
             raw_answer if isinstance(raw_answer, dict) else {"answer": str(raw_answer)}
+        )
+        logger.log(
+            LogCode.DEEP_RESEARCH_ANSWER_SUCCEEDED,
+            paper_id=self.selected_paper["id"],
+            source_count=len(answer_data.get("sources") or []),
         )
         return self._result(
             "success",
@@ -733,12 +792,20 @@ class DeepResearchBot:
         max_results_per_reference: int = 3,
     ) -> dict[str, Any]:
         if not self.pending_references:
+            logger.log(
+                LogCode.DEEP_RESEARCH_REQUEST_REJECTED,
+                reason="reference_confirmation_required",
+            )
             return self._result(
                 "reference_confirmation_required",
                 "먼저 관련 논문을 확인하고 검색 여부를 선택해 주세요.",
             )
         if self.search_agent is None:
             self.pending_references = []
+            logger.log(
+                LogCode.DEEP_RESEARCH_REQUEST_REJECTED,
+                reason="search_agent_unavailable",
+            )
             return self._result(
                 "search_agent_unavailable",
                 "해당 검색 에이전트가 존재하지 않아 참조 논문을 검색할 수 없습니다.",
@@ -746,6 +813,11 @@ class DeepResearchBot:
             )
 
         targets = self.pending_references[:max(1, int(max_references))]
+        logger.log(
+            LogCode.DEEP_RESEARCH_RELATED_SEARCH_STARTED,
+            reference_count=len(targets),
+            max_results_per_reference=max_results_per_reference,
+        )
         results: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
         seen: set[str] = set()
@@ -758,6 +830,12 @@ class DeepResearchBot:
                     max_results=max(1, int(max_results_per_reference)),
                 )
             except Exception as error:
+                logger.log(
+                    LogCode.DEEP_RESEARCH_RELATED_SEARCH_FAILED,
+                    ref_index=reference["ref_index"],
+                    error_type=type(error).__name__,
+                    error=str(error),
+                )
                 errors.append(
                     {
                         "ref_index": reference["ref_index"],
@@ -781,6 +859,11 @@ class DeepResearchBot:
 
         self.pending_references = []
         if not results:
+            if not errors:
+                logger.log(
+                    LogCode.DEEP_RESEARCH_RELATED_SEARCH_FAILED,
+                    reason="no_results",
+                )
             return self._result(
                 "search_empty" if not errors else "search_error",
                 (
@@ -791,6 +874,11 @@ class DeepResearchBot:
                 results=[],
                 errors=errors,
             )
+        logger.log(
+            LogCode.DEEP_RESEARCH_RELATED_SEARCH_SUCCEEDED,
+            result_count=len(results),
+            error_count=len(errors),
+        )
         return self._result(
             "success",
             f"참조 논문 검색 결과 {len(results)}개를 찾았습니다.",

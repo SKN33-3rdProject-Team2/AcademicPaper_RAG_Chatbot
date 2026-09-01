@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from uuid import uuid4
 
 import streamlit as st
@@ -10,12 +11,15 @@ from apps.ui import render_page_heading
 from feature.search_list import LocalLibraryBot
 from orchestration.graph import build_graph
 from orchestration.state import initial_state
+from tools import PROJECT_DIR
 
 
 MESSAGES_KEY = "supervisor_chat_messages"
 SESSION_KEY = "supervisor_chat_session"
 TURN_KEY = "supervisor_chat_turn"
 PAPER_IDS_KEY = "supervisor_paper_ids"
+SELECTED_PAPER_KEY = "supervisor_selected_paper_id"
+EXTRACTED_PAPERS_PATH = PROJECT_DIR / "data" / "paper_extract" / "extracted_papers.json"
 
 
 @st.cache_resource(show_spinner=False)
@@ -28,6 +32,7 @@ def _reset_chat() -> None:
     st.session_state[SESSION_KEY] = uuid4().hex[:10]
     st.session_state[TURN_KEY] = 0
     st.session_state[PAPER_IDS_KEY] = []
+    st.session_state[SELECTED_PAPER_KEY] = None
     st.session_state[MESSAGES_KEY] = [
         {
             "role": "assistant",
@@ -43,7 +48,8 @@ def _run_supervisor(prompt: str) -> tuple[str, list[dict]]:
     turn = st.session_state[TURN_KEY]
     thread_id = f"streamlit-{st.session_state[SESSION_KEY]}-{turn}"
     st.session_state[TURN_KEY] = turn + 1
-    paper_ids = list(st.session_state[PAPER_IDS_KEY])
+    selected_paper_id = st.session_state.get(SELECTED_PAPER_KEY)
+    paper_ids = [selected_paper_id] if selected_paper_id else list(st.session_state[PAPER_IDS_KEY])
     normalized = prompt.casefold()
     list_signals = ("보유", "서재", "저장된", "목록", "리스트", "library")
     action_signals = ("다운로드", "번역", "요약", "검색해", "찾아줘")
@@ -76,6 +82,21 @@ def _run_supervisor(prompt: str) -> tuple[str, list[dict]]:
     )
 
 
+def _extracted_paper_options() -> dict[str, str]:
+    """본문 기반 Q&A 대상으로 선택할 수 있는 추출 논문 목록을 읽는다."""
+    if not EXTRACTED_PAPERS_PATH.exists():
+        return {}
+    try:
+        data = json.loads(EXTRACTED_PAPERS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return {
+        str(paper_id): str(paper.get("title") or paper_id)
+        for paper_id, paper in data.items()
+        if isinstance(paper, dict)
+    }
+
+
 def render_deep_search_page() -> None:
     """대화 내역을 표시하고 질문을 Supervisor Graph로 전달한다."""
     render_page_heading(
@@ -84,6 +105,17 @@ def render_deep_search_page() -> None:
     )
     if SESSION_KEY not in st.session_state:
         _reset_chat()
+
+    paper_options = _extracted_paper_options()
+    selected_paper_id = st.selectbox(
+        "질문할 논문 선택",
+        options=[None, *paper_options],
+        format_func=lambda paper_id: (
+            "선택하지 않음" if paper_id is None else paper_options[paper_id]
+        ),
+        help="본문 기반 질의응답은 한 번에 논문 한 편만 대상으로 합니다.",
+    )
+    st.session_state[SELECTED_PAPER_KEY] = selected_paper_id
 
     controls, guide = st.columns([1.7, 8.3])
     with controls:
