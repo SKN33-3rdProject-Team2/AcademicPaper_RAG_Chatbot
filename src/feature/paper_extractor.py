@@ -27,10 +27,10 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import tool
 
 # ---------------------------------------------------------------------
-# [모듈 임포트 경로 설정: src 와 프로젝트 루트 기준]
+# [모듈 임포트 경로 설정: tests 및 프로젝트 루트 기준 절대 경로 보정]
 # ---------------------------------------------------------------------
-SRC_DIR = Path(__file__).resolve().parent.parent
-PROJECT_ROOT = SRC_DIR.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+SRC_DIR = PROJECT_ROOT / "src"
 for _path in (SRC_DIR, PROJECT_ROOT):
     if str(_path) not in sys.path:
         sys.path.append(str(_path))
@@ -1299,9 +1299,35 @@ class PaperExtraRAGBot:
         return summary_text
 
     def _process_batch_actions(self, target_papers: List[Dict[str, Any]], act: str):
+        # [방어 로직 추가 부분 시작] - 파일 덮어쓰기 방지 및 재확인 프롬프트
         print(f"\n[System] 🚀 총 {len(target_papers)}편의 논문에 대해 일괄 변환을 시작합니다. (작업: {act})")
+
         for idx, paper in enumerate(target_papers, 1):
             print(f"\n-------------------- [{idx}/{len(target_papers)}] {paper['title']} --------------------")
+
+            safe_title = self._safe_filename(paper["title"])
+            trans_path = os.path.join(self.output_dir, f"{safe_title}_full_translated.md")
+            summ_path = os.path.join(self.output_dir, f"{safe_title}_summary.md")
+
+            # 수행할 작업(act)에 따라 기존 파일 유무를 검사합니다.
+            file_exists = False
+            if act == "translate" and os.path.exists(trans_path):
+                file_exists = True
+            elif act == "summarize" and os.path.exists(summ_path):
+                file_exists = True
+            elif act == "both" and (os.path.exists(trans_path) or os.path.exists(summ_path)):
+                file_exists = True
+
+            if file_exists:
+                print(f"[System] ⚠️ 번역 요약이 완료되었습니다.")
+                ans = input("👉 기존의 파일을 삭제하고 다시 번역 요약해드릴까요? (예/아니오): ").strip().lower()
+
+                # 사용자가 '예' 계열의 긍정적인 답변을 하지 않으면, 건너뛰고 다음 논문으로 진행합니다.
+                if not any(w in ans for w in ["예", "응", "y", "yes", "네", "진행"]):
+                    print("[System] 기존 파일을 유지하며, 해당 논문의 작업을 건너뜁니다.")
+                    continue
+            # [방어 로직 추가 부분 끝]
+
             translated = None
             if act in ["translate", "both"]:
                 translated = self.execute_translation(paper)

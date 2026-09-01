@@ -62,9 +62,11 @@ def _default_summarizer():
 
 
 def _default_deep_research_agent():
-    from feature.deep_research import DeepResearchAgent
+    from feature.deep_research import DeepResearchBot
 
-    return DeepResearchAgent()
+    # with_openai 가 저장소·검색기·답변기를 한꺼번에 엮어 준다. 생성자를 직접 부르면
+    # repository 를 인자로 받아야 해서, 기본값으로 쓰기에는 이쪽이 맞다.
+    return DeepResearchBot.with_openai()
 
 
 class KeywordNode:
@@ -278,11 +280,19 @@ class DeepResearchNode:
         return self._agent
 
     def __call__(self, state: WorkflowState) -> dict[str, Any]:
-        answer = self.agent.chat(
-            state["query"],
-            thread_id=state.get("thread_id", "default"),
-        )
-        return {
-            "response": answer,
+        # DeepResearchBot 은 대화 상태를 자기 안에 들고 있어서 thread_id 를 받지 않는다.
+        # 돌려주는 것도 문자열이 아니라 {"status", "message", ...} 이다.
+        result = self.agent.handle_message(state["query"])
+
+        # 질문에 답한 경우 message 는 "선택한 논문을 근거로 답변했습니다" 같은 상태 문구고,
+        # 사용자에게 보여야 할 본문은 answer 에 들어 있다. 목록·선택처럼 본문이 없는
+        # 응답에서는 message 가 그대로 보여 줄 내용이다.
+        response = str(result.get("answer") or result.get("message") or "")
+
+        payload: dict[str, Any] = {
+            "response": response,
             "node_history": ["deep_research"],
         }
+        if result.get("sources"):
+            payload["sources"] = result["sources"]
+        return payload
