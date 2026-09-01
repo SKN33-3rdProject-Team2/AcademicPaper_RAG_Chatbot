@@ -12,7 +12,7 @@ import os
 import re
 import sqlite3
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "paper_list" / "saved_papers.db"
@@ -975,6 +975,32 @@ def format_cli_response(response: dict[str, Any]) -> str:
 
     lines.append("=" * 65)
     return "\n".join(lines)
+
+
+class DeepResearchAgent:
+    """LangGraph와 기존 DeepResearchBot을 연결하는 대화 세션 어댑터."""
+
+    def __init__(
+        self,
+        bot_factory: Callable[[], DeepResearchBot] | None = None,
+    ) -> None:
+        self._bot_factory = bot_factory or self._create_bot
+        self._bots: dict[str, DeepResearchBot] = {}
+
+    @staticmethod
+    def _create_bot() -> DeepResearchBot:
+        return DeepResearchBot.with_openai(PaperArtifactRepository())
+
+    def _get_bot(self, thread_id: str) -> DeepResearchBot:
+        resolved_thread_id = str(thread_id or "default")
+        if resolved_thread_id not in self._bots:
+            self._bots[resolved_thread_id] = self._bot_factory()
+        return self._bots[resolved_thread_id]
+
+    def chat(self, query: str, *, thread_id: str = "default") -> str:
+        """사용자 메시지를 해당 대화의 Bot에 전달하고 출력 문자열을 반환한다."""
+        response = self._get_bot(thread_id).handle_message(query)
+        return format_cli_response(response)
 
 
 def run_cli() -> None:
