@@ -61,6 +61,8 @@ class WorkflowState(TypedDict, total=False):
 
     keywords: list[str]
     paper_ids: list[str]
+    download_paper_ids: list[str]
+    deep_search_paper_id: str
     selected_papers: list[dict[str, Any]]
     search_results: list[dict[str, Any]]
     library_results: list[dict[str, Any]]
@@ -101,6 +103,8 @@ def initial_state(
         "query": normalized,
         "thread_id": thread_id,
         "paper_ids": list(paper_ids or []),
+        "download_paper_ids": [],
+        "deep_search_paper_id": "",
         "remaining_steps": [],
         "retry_counts": {},
         "max_retries": max(0, max_retries),

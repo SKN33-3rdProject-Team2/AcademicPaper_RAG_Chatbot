@@ -197,12 +197,20 @@ class DownloadNode:
         return self._bot
 
     def __call__(self, state: WorkflowState) -> dict[str, Any]:
-        papers = (
-            state.get("selected_papers")
-            or state.get("library_results")
-            or state.get("search_results")
-            or []
-        )
+        download_paper_ids = [
+            str(paper_id).strip()
+            for paper_id in state.get("download_paper_ids", [])
+            if str(paper_id).strip()
+        ]
+        if download_paper_ids:
+            papers = self.bot.fetch_full_data_from_db(download_paper_ids)
+        else:
+            papers = (
+                state.get("selected_papers")
+                or state.get("library_results")
+                or state.get("search_results")
+                or []
+            )
         if not papers:
             raise NodeExecutionError("다운로드할 논문이 선택되지 않았습니다.")
         paths: list[str] = []
@@ -217,8 +225,19 @@ class DownloadNode:
                 paths.append(f"{paper.get('title', paper.get('id', ''))}: {status}")
                 if paper.get("id"):
                     paper_ids.append(str(paper["id"]))
+        deep_search_paper_id = str(
+            state.get("deep_search_paper_id") or ""
+        ).strip()
+        selected_paper_ids = [
+            str(paper_id).strip()
+            for paper_id in state.get("paper_ids", [])
+            if str(paper_id).strip()
+        ]
         return {
-            "paper_ids": paper_ids or list(state.get("paper_ids", [])),
+            "paper_ids": (
+                selected_paper_ids
+                or ([deep_search_paper_id] if deep_search_paper_id else paper_ids)
+            ),
             "downloaded_paths": paths,
             "node_history": ["download"],
         }
@@ -413,6 +432,9 @@ class DeepSearchNode:
         }
 
     def __call__(self, state: WorkflowState) -> dict[str, Any]:
+        requested_paper_id = str(
+            state.get("deep_search_paper_id") or ""
+        ).strip()
         paper_ids = list(
             dict.fromkeys(
                 str(paper_id).strip()
@@ -420,13 +442,15 @@ class DeepSearchNode:
                 if str(paper_id).strip()
             )
         )
+        if requested_paper_id:
+            paper_ids = [requested_paper_id]
         active_paper_id = str(state.get("deep_research_paper_id") or "").strip()
         candidates = [
             dict(candidate)
             for candidate in state.get("deep_search_candidates", [])
             if isinstance(candidate, dict)
         ]
-        if candidates:
+        if candidates and not requested_paper_id:
             selected = self._select_candidate(state["query"], candidates)
             if selected is not None:
                 selected_id = str(selected.get("paper_id") or "").strip()
@@ -573,6 +597,17 @@ class DeepResearchNode:
             ]
         )
 
+    @staticmethod
+    def _with_download_summary(state: WorkflowState, response: str) -> str:
+        if "download" not in state.get("node_history", []):
+            return response
+        paths = [str(path) for path in state.get("downloaded_paths", []) if path]
+        if not paths:
+            return response
+        return "\n".join(
+            ["다운로드 결과:", *(f"- {path}" for path in paths), "", response]
+        )
+
     def __call__(self, state: WorkflowState) -> dict[str, Any]:
         paper_ids = [
             str(paper_id).strip()
@@ -598,7 +633,10 @@ class DeepResearchNode:
             and str(source.get("document") or source.get("excerpt") or "").strip()
         ]
         if not sources:
-            response = self._insufficient_evidence_response(references)
+            response = self._with_download_summary(
+                state,
+                self._insufficient_evidence_response(references),
+            )
             return {
                 "response": response,
                 "deep_research_status": "insufficient_evidence",
@@ -640,7 +678,10 @@ class DeepResearchNode:
         if result.get("has_evidence") is False or (
             isinstance(answer_sources, list) and not answer_sources
         ):
-            response = self._insufficient_evidence_response(references)
+            response = self._with_download_summary(
+                state,
+                self._insufficient_evidence_response(references),
+            )
             return {
                 "response": response,
                 "deep_research_status": "insufficient_evidence",
@@ -649,6 +690,8 @@ class DeepResearchNode:
                 "deep_research_paper_id": paper_id,
                 "node_history": ["deep_research"],
             }
+
+        response = self._with_download_summary(state, response)
 
         return {
             "response": response,

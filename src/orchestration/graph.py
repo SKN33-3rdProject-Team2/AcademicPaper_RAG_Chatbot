@@ -238,6 +238,10 @@ def build_graph(
         route = steps.pop(0)
         routed = dispatch(state, route, steps, reason=decision.reason)
         routed["deep_search_selection_required"] = decision.await_selection
+        if decision.selected_paper_ids:
+            routed["paper_ids"] = list(decision.selected_paper_ids)
+        routed["download_paper_ids"] = list(decision.download_paper_ids)
+        routed["deep_search_paper_id"] = decision.deep_search_paper_id
         return routed
 
     def finish(state: WorkflowState) -> dict[str, Any]:
