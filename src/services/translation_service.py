@@ -10,6 +10,9 @@ from .generation_options import (
     resolve_positive_int,
 )
 from .model_config_service import ModelConfigError, load_task_config
+from .nvidia_service import NvidiaServiceError
+from .nvidia_service import chat as nvidia_chat
+from .nvidia_service import is_available as nvidia_is_available
 from .ollama_service import (
     OllamaServiceError,
     check_connection,
@@ -35,7 +38,13 @@ def _load_translation_config() -> dict[str, object]:
         if not isinstance(stream, bool):
             raise ValueError("translation.stream은 true 또는 false여야 합니다.")
 
+        # provider 로 어디에 물어볼지 고른다. 기본값은 지금까지 쓰던 ollama 다.
+        provider = str(data.get("provider", "ollama")).strip().casefold() or "ollama"
+        if provider not in ("ollama", "nvidia"):
+            raise ValueError("translation.provider는 ollama 또는 nvidia여야 합니다.")
+
         return {
+            "provider": provider,
             "model": model,
             "stream": stream,
             "temperature": resolve_float(
@@ -113,6 +122,7 @@ class TranslateService:
         retry_backoff_seconds: float | None = None,
     ) -> None:
         config = _load_translation_config()
+        self.provider = str(config["provider"])
         self.model = str(config["model"])
         self.stream = bool(config["stream"])
         self.temperature = resolve_float(
@@ -148,6 +158,21 @@ class TranslateService:
 
     def ensure_available(self) -> None:
         """YAML에서 선택한 모델의 연결 실패를 로그로 남기고 중단한다."""
+        if self.provider == "nvidia":
+            if nvidia_is_available():
+                return
+            logger.log(
+                LogCode.TRANSLATION_REJECTED,
+                reason="nvidia_key_missing",
+                retryable=False,
+                model=self.model,
+            )
+            raise TranslateServiceError(
+                "NVIDIA API 키가 없어 번역 모델을 쓸 수 없습니다. "
+                ".env 의 NVIDIA_API_KEY 를 확인해 주세요.",
+                reason="nvidia_key_missing",
+            )
+
         if check_connection(model=self.model):
             return
         logger.log(
@@ -164,6 +189,9 @@ class TranslateService:
 
     def translate(self, prompt: str) -> str:
         """번역 모델을 호출하고 통신 실패를 번역 서비스 오류로 변환한다."""
+        if self.provider == "nvidia":
+            return self._translate_with_nvidia(prompt)
+
         try:
             return generate(
                 prompt,
@@ -179,4 +207,26 @@ class TranslateService:
                 reason=exc.reason,
                 retryable=exc.retryable,
                 status_code=exc.status_code,
+            ) from exc
+
+    def _translate_with_nvidia(self, prompt: str) -> str:
+        """NVIDIA Build API 로 번역한다.
+
+        같은 4,000자 조각을 로컬 CPU 는 331.9초, 이쪽은 21.8초에 옮겼다. 번역은
+        입력만큼 긴 출력을 만들어야 해서 CPU 추론으로는 논문 한 편에 20~50분이
+        걸린다. 재시도와 타임아웃은 nvidia_service 가 이미 처리한다.
+        """
+        try:
+            return nvidia_chat(
+                [{"role": "user", "content": prompt}],
+                model=self.model,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                timeout=int(self.timeout),
+            ).strip()
+        except NvidiaServiceError as exc:
+            raise TranslateServiceError(
+                str(exc),
+                reason="nvidia_request_failed",
+                retryable=True,
             ) from exc
