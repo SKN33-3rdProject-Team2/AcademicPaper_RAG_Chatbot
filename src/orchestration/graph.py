@@ -1,4 +1,4 @@
-"""StateGraph wiring for all paper chatbot classes and the RAG chain."""
+"""StateGraph wiring for the academic-paper workflow."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from langsmith import traceable
 from orchestration.adapters import (
     ArxivSearchNode,
     DeepResearchNode,
+    DeepSearchNode,
     DownloadNode,
     ExtractNode,
     KeywordNode,
@@ -19,33 +20,8 @@ from orchestration.adapters import (
     SummaryNode,
     TranslateNode,
 )
-from orchestration.rag_chain import RAGNode
 from orchestration.routing import SupervisorRouter, next_route
 from orchestration.state import Route, WorkflowState
-
-
-def _unique_paper_sources(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    unique: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for source in sources:
-        paper_id = str(source.get("paper_id") or "").strip()
-        title = str(source.get("title") or "").strip()
-        key = paper_id or title.casefold()
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        unique.append(dict(source))
-    return unique
-
-
-def _format_paper_choices(sources: list[dict[str, Any]]) -> str:
-    lines = [
-        f"{index}. {source.get('title') or source.get('paper_id') or '제목 없음'}"
-        for index, source in enumerate(sources, 1)
-    ]
-    return "\n".join(
-        ["설명 가능한 논문 목록입니다.", *lines, "번호나 제목을 선택해 설명을 요청해 주세요."]
-    )
 
 
 def _guarded(name: str, node: Callable[[WorkflowState], dict[str, Any]]):
@@ -114,7 +90,7 @@ def build_graph(
         "extract": ExtractNode(),
         "translate": TranslateNode(),
         "summarize": SummaryNode(),
-        "rag": RAGNode(),
+        "deep_search": DeepSearchNode(),
         "deep_research": DeepResearchNode(),
     }
 
@@ -209,105 +185,42 @@ def build_graph(
                 "errors": ["키워드를 바꿔 재검색했지만 논문을 찾지 못했습니다."],
             }
 
-        research_steps: list[Route] = [
-            "keyword",
-            "search",
-            "download",
-            "extract",
-            "translate",
-            "summarize",
-            "rag",
-        ]
-        # RAG가 문서를 찾으면 해당 문서를 Deep Research에 넘긴다. 문서가 없으면
-        # Supervisor가 검색·추출·번역·요약을 거쳐 RAG를 다시 실행한다.
-        if last_node == "rag":
-            if state.get("sources"):
-                if state.get("rag_selection_required"):
-                    candidates = _unique_paper_sources(list(state["sources"]))
-                    return {
-                        "route": "finish",
-                        "route_reason": "RAG 후보 논문을 보여주고 사용자 선택 대기",
-                        "remaining_steps": [],
-                        "rag_candidates": candidates,
-                        "rag_selection_required": False,
-                        "response": _format_paper_choices(candidates),
-                        "sources": [],
-                    }
+        # Deep Search는 선택된 한 논문의 본문과 참고문헌만 조회한다.
+        # 본문 근거가 없어도 Deep Research가 해당 논문의 참고문헌을 안내한다.
+        if last_node == "deep_search":
+            if state.get("deep_search_selection_required"):
+                return {
+                    "route": "finish",
+                    "route_reason": "추출 논문 목록을 보여주고 사용자 선택 대기",
+                    "remaining_steps": [],
+                }
+            if state.get("paper_ids"):
                 return {
                     "route": "deep_research",
-                    "route_reason": "RAG 관련 문서를 Deep Research에 전달",
+                    "route_reason": "선택 논문의 본문 근거와 참고문헌을 Deep Research에 전달",
                     "remaining_steps": remaining,
                 }
-
-            attempts = int(retry_counts.get("rag_rebuild", 0))
-            if attempts < max_retries:
-                retry_counts["rag_rebuild"] = attempts + 1
-                steps = (
-                    ["extract", "translate", "summarize", "rag"]
-                    if state.get("paper_ids")
-                    else research_steps
-                )
-                route = steps.pop(0)
-                return {
-                    "route": route,
-                    "route_reason": "RAG 관련 문서가 없어 논문을 재처리",
-                    "remaining_steps": steps,
-                    "retry_counts": retry_counts,
-                }
             return {
                 "route": "finish",
-                "route_reason": "논문 재처리 후에도 RAG 문서 없음",
+                "route_reason": "심층 질문 대상 논문이 선택되지 않음",
                 "remaining_steps": [],
-                "retry_counts": retry_counts,
-                "errors": ["논문을 다시 처리했지만 질문과 관련된 문서를 찾지 못했습니다."],
             }
 
-        # Deep Research가 전달된 문서를 충분히 설명하지 못하면 Supervisor가
-        # 추가 논문을 검색하고 전체 처리 흐름을 다시 수행한다.
         if last_node == "deep_research":
-            if state.get("deep_research_status") in {"selection_required", "empty"}:
+            if state.get("deep_research_status") in {
+                "success",
+                "insufficient_evidence",
+            }:
                 return {
                     "route": "finish",
-                    "route_reason": "로컬 분석 논문 목록을 보여주고 사용자 선택 대기",
+                    "route_reason": "Deep Research 답변 또는 참고문헌 안내 완료",
                     "remaining_steps": [],
-                }
-
-            if state.get("deep_research_local_only"):
-                return {
-                    "route": "finish",
-                    "route_reason": "paper_extract DB의 선택 논문 설명 완료",
-                    "remaining_steps": [],
-                    "deep_research_local_only": False,
-                }
-
-            deep_sufficient = (
-                state.get("deep_research_status") == "success"
-                and bool(state.get("deep_research_sources"))
-            )
-            if deep_sufficient:
-                return {
-                    "route": "finish",
-                    "route_reason": "Deep Research 설명 완료",
-                    "remaining_steps": [],
-                }
-
-            attempts = int(retry_counts.get("deep_research", 0))
-            if attempts < max_retries:
-                retry_counts["deep_research"] = attempts + 1
-                steps = list(research_steps)
-                route = steps.pop(0)
-                return {
-                    "route": route,
-                    "route_reason": "Deep Research 설명이 부족하여 추가 논문 검색",
-                    "remaining_steps": steps,
-                    "retry_counts": retry_counts,
                 }
             return {
                 "route": "finish",
-                "route_reason": "추가 검색 후에도 Deep Research 설명 부족",
+                "route_reason": "선택 논문의 Deep Research 답변 근거 부족",
                 "remaining_steps": [],
-                "retry_counts": retry_counts,
-                "errors": ["추가 논문을 검색했지만 충분한 설명 근거를 찾지 못했습니다."],
+                "errors": ["선택한 논문의 근거만으로 충분한 답변을 만들지 못했습니다."],
             }
 
         if remaining:
@@ -324,7 +237,7 @@ def build_graph(
         steps: list[Route] = list(decision.steps)
         route = steps.pop(0)
         routed = dispatch(state, route, steps, reason=decision.reason)
-        routed["rag_selection_required"] = decision.await_selection
+        routed["deep_search_selection_required"] = decision.await_selection
         return routed
 
     def finish(state: WorkflowState) -> dict[str, Any]:

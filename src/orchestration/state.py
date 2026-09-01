@@ -36,7 +36,7 @@ Route = Literal[
     "extract",
     "translate",
     "summarize",
-    "rag",
+    "deep_search",
     "deep_research",
     "finish",
 ]
@@ -69,15 +69,14 @@ class WorkflowState(TypedDict, total=False):
     translated_paths: list[str]
     summaries: list[dict[str, Any]]
 
-    rag_answer: str
     sources: list[dict[str, Any]]
-    rag_candidates: list[dict[str, Any]]
-    rag_selection_required: bool
+    deep_search_references: list[str]
+    deep_search_candidates: list[dict[str, Any]]
+    deep_search_selection_required: bool
     deep_research_status: str
     deep_research_answer: str
     deep_research_sources: list[Any]
     deep_research_paper_id: str
-    deep_research_local_only: bool
     response: str
 
     node_history: Annotated[list[str], _accumulate]
@@ -110,14 +109,12 @@ def initial_state(
         "errors": [_RESET],
         # Per-turn outputs: these are plain (non-reducer) fields, so a prior
         # turn's value would otherwise sit in the checkpoint untouched and
-        # leak into a turn whose plan never sets them (e.g. a "library"-only
-        # turn re-showing a previous turn's RAG answer/sources).
+        # leak into a turn whose plan never sets it.
         "response": "",
         "sources": [],
-        "rag_selection_required": False,
-        "rag_answer": "",
+        "deep_search_references": [],
+        "deep_search_selection_required": False,
         "deep_research_status": "",
         "deep_research_answer": "",
         "deep_research_sources": [],
-        "deep_research_paper_id": "",
     }

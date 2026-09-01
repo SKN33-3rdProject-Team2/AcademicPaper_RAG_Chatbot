@@ -20,7 +20,7 @@ ExecutableRoute = Literal[
     "extract",
     "translate",
     "summarize",
-    "rag",
+    "deep_search",
     "deep_research",
 ]
 
@@ -44,28 +44,28 @@ Nodes:
 - extract: extract PDF text; required before translate
 - translate: translate extracted Markdown; required before summarize
 - summarize: summarize translated Markdown and store it in ChromaDB
-- rag: answer a question using only summaries already stored in ChromaDB
-- deep_research: list or deeply analyze papers already present in paper_extract
+- deep_search: retrieve relevant passages from exactly one paper saved by PaperExtractor
+- deep_research: answer using only passages returned by deep_search
 
 Rules:
 1. For a new external search use [keyword, search].
 2. For translation use [extract, translate] unless extraction data exists.
 3. For summary use [extract, translate, summarize] unless earlier artifacts exist.
-4. RAG is QA only; never use RAG as a translation step.
+4. Deep Search is retrieval only; Deep Research is answer generation only.
 5. Do not invent a download step if no selected/search-result papers exist.
 6. Prefer library for list/search requests about locally saved papers.
-7. For deep analysis or comparison, use [deep_research] immediately when an
-   explicit paper target is already available. Otherwise start with [rag] so
-   the supervisor can retrieve and select a paper first.
+7. For any question or deep analysis about an extracted paper, use
+   [deep_search]. The graph automatically passes successful evidence to
+   deep_research. Never start deep_research without deep_search evidence.
 8. A request that chains multiple stages (e.g. "find the latest 5 LLM papers,
    translate and summarize them, then explain them") is ONE plan, not
    separate requests — emit the full ordered chain in one call, for example
-   [keyword, search, download, extract, translate, summarize, rag]. Only
+   [keyword, search, download, extract, translate, summarize, deep_search]. Only
    include the stages actually implied by the request and skip stages whose
    artifacts already exist per "Available state".
 9. Treat conversational questions about which papers the assistant can explain
-   as requests to list papers from data/paper_extract via deep_research. Never
-   start RAG, external search, or download for those local inventory questions.
+   as requests to list papers from data/paper_extract via deep_search. Never
+   start external search or download for those local inventory questions.
 """
 
 
@@ -98,11 +98,8 @@ class SupervisorRouter:
             or state.get("library_results")
         )
 
-        # In a chatbot, "설명 가능한 논문이 뭐가 있어?" asks what the
-        # assistant can currently explain. It is not an instruction to search,
-        # download, and process ten new papers. Inspect indexed RAG content
-        # first; the graph will hand a retrieved source to Deep Research and
-        # will run the external rebuild pipeline only when RAG has no source.
+        # "설명 가능한 논문이 뭐가 있어?"는 새 논문 검색 요청이 아니라
+        # PaperExtractor가 저장한 로컬 논문 목록 요청으로 처리한다.
         asks_explainable_inventory = (
             "논문" in query
             and any(
@@ -113,7 +110,7 @@ class SupervisorRouter:
         )
         if asks_explainable_inventory:
             return SupervisorDecision(
-                steps=["deep_research"],
+                steps=["deep_search"],
                 reason="paper_extract DB의 분석 가능한 논문 확인",
                 await_selection=True,
             )
@@ -125,17 +122,17 @@ class SupervisorRouter:
             "분석",
             "deep research",
         )
-        rag_candidates = [
+        deep_search_candidates = [
             source
-            for source in state.get("rag_candidates", [])
+            for source in state.get("deep_search_candidates", [])
             if isinstance(source, dict)
         ]
         number_match = re.search(r"(\d+)\s*번", query)
         selected_number = int(number_match.group(1)) if number_match else 0
-        selected_by_number = 0 < selected_number <= len(rag_candidates)
+        selected_by_number = 0 < selected_number <= len(deep_search_candidates)
         selected_by_title = any(
             str(source.get("title") or "").strip().casefold() in query
-            for source in rag_candidates
+            for source in deep_search_candidates
             if str(source.get("title") or "").strip()
         )
         has_candidate_selection = selected_by_number or selected_by_title
@@ -151,8 +148,8 @@ class SupervisorRouter:
         )
         if has_direct_research_target and asks_direct_research:
             return SupervisorDecision(
-                steps=["deep_research"],
-                reason="지정된 논문을 바로 심층 분석",
+                steps=["deep_search"],
+                reason="지정된 추출 논문에서 심층 질문 근거 검색",
             )
 
         # A request can chain multiple stages in one sentence (e.g. "찾아서
@@ -185,7 +182,7 @@ class SupervisorRouter:
             elif any(term in query for term in ("다운로드", "download")):
                 steps.append("download")
             if wants_qa or wants_deep:
-                steps.append("rag")
+                steps.append("deep_search")
             ordered: list[ExecutableRoute] = []
             for step in steps:
                 if step not in ordered:
@@ -197,7 +194,10 @@ class SupervisorRouter:
         if any(term in query for term in explicit_qa_signals) or (
             "rag" in query and any(term in query for term in stored_content_signals)
         ):
-            return SupervisorDecision(steps=["rag"], reason="저장된 요약 기반 질의응답")
+            return SupervisorDecision(
+                steps=["deep_search"],
+                reason="선택한 추출 논문에서 근거 검색 후 심층 답변",
+            )
         if any(term in query for term in ("번역", "translate")):
             steps = [] if has_extraction else ["extract"]
             steps.append("translate")
@@ -216,18 +216,22 @@ class SupervisorRouter:
             steps = ["download"] if has_candidates else ["library", "download"]
             return SupervisorDecision(steps=steps, reason="논문 다운로드 요청")
         if any(term in query for term in deep_research_terms):
-            return SupervisorDecision(steps=["rag"], reason="저장 문서 검색 후 심층 분석")
+            return SupervisorDecision(
+                steps=["deep_search"], reason="추출 논문 검색 후 심층 분석"
+            )
         if any(term in query for term in ("서재", "저장된", "목록", "리스트", "library")):
             return SupervisorDecision(steps=["library"], reason="로컬 서재 요청")
         if any(term in query for term in ("rag", "근거", "출처", "질문", "설명해")):
-            return SupervisorDecision(steps=["rag"], reason="저장된 요약 기반 질의응답")
+            return SupervisorDecision(
+                steps=["deep_search"], reason="추출 논문 근거 기반 질의응답"
+            )
         return None
 
     @classmethod
     def _fallback(cls, state: WorkflowState) -> SupervisorDecision:
         return cls._rule_decision(state) or SupervisorDecision(
-            steps=["rag"],
-            reason="저장 문서 검색 후 질의응답",
+            steps=["deep_search"],
+            reason="추출 논문 검색 후 질의응답",
         )
 
     def decide(self, state: WorkflowState) -> SupervisorDecision:
