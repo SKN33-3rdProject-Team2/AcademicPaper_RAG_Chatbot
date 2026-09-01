@@ -71,10 +71,13 @@ class WorkflowState(TypedDict, total=False):
 
     rag_answer: str
     sources: list[dict[str, Any]]
+    rag_candidates: list[dict[str, Any]]
+    rag_selection_required: bool
     deep_research_status: str
     deep_research_answer: str
     deep_research_sources: list[Any]
     deep_research_paper_id: str
+    deep_research_local_only: bool
     response: str
 
     node_history: Annotated[list[str], _accumulate]
@@ -111,6 +114,7 @@ def initial_state(
         # turn re-showing a previous turn's RAG answer/sources).
         "response": "",
         "sources": [],
+        "rag_selection_required": False,
         "rag_answer": "",
         "deep_research_status": "",
         "deep_research_answer": "",

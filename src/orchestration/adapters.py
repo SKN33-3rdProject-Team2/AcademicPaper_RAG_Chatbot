@@ -345,17 +345,102 @@ class DeepResearchNode:
         return self._agent
 
     def __call__(self, state: WorkflowState) -> dict[str, Any]:
-        rag_sources = [
+        if state.get("rag_selection_required"):
+            result = self.agent.list_papers()
+            papers = [
+                paper
+                for paper in result.get("papers", [])
+                if isinstance(paper, dict)
+            ]
+            candidates = [
+                {
+                    "paper_id": str(paper.get("id") or ""),
+                    "title": str(paper.get("title") or ""),
+                }
+                for paper in papers
+                if str(paper.get("id") or "").strip()
+            ]
+            if candidates:
+                lines = [
+                    f"{index}. {paper['title'] or paper['paper_id']}"
+                    for index, paper in enumerate(candidates, 1)
+                ]
+                response = "\n".join(
+                    [
+                        "설명 가능한 분석 논문 목록입니다.",
+                        *lines,
+                        "번호나 제목을 선택해 설명을 요청해 주세요.",
+                    ]
+                )
+                status = "selection_required"
+            else:
+                response = str(
+                    result.get("message")
+                    or "data/paper_extract에 분석 가능한 논문이 없습니다."
+                )
+                status = "empty"
+            return {
+                "response": response,
+                "rag_candidates": candidates,
+                "rag_selection_required": False,
+                "deep_research_status": status,
+                "deep_research_local_only": True,
+                "node_history": ["deep_research"],
+            }
+
+        candidate_sources: list[dict[str, Any]] = []
+
+        # An explicitly supplied paper can go straight from the supervisor to
+        # Deep Research. RAG sources remain the fallback when the user has not
+        # selected a paper yet.
+        for paper_id in state.get("paper_ids", []):
+            normalized = str(paper_id or "").strip()
+            if normalized:
+                candidate_sources.append({"paper_id": normalized})
+
+        active_paper_id = str(state.get("deep_research_paper_id") or "").strip()
+        if active_paper_id:
+            candidate_sources.append({"paper_id": active_paper_id})
+
+        rag_candidates = [
+            source
+            for source in state.get("rag_candidates", [])
+            if isinstance(source, dict)
+        ]
+        number_match = re.search(r"(\d+)\s*번", state["query"])
+        if number_match:
+            selected_index = int(number_match.group(1)) - 1
+            if 0 <= selected_index < len(rag_candidates):
+                candidate_sources.append(rag_candidates[selected_index])
+        else:
+            normalized_query = state["query"].casefold()
+            title_matches = [
+                source
+                for source in rag_candidates
+                if str(source.get("title") or "").strip().casefold()
+                in normalized_query
+            ]
+            if title_matches:
+                candidate_sources.append(
+                    max(title_matches, key=lambda source: len(str(source.get("title") or "")))
+                )
+
+        candidate_sources.extend(
+            paper
+            for paper in state.get("selected_papers", [])
+            if isinstance(paper, dict)
+        )
+        candidate_sources.extend(
             source
             for source in state.get("sources", [])
             if isinstance(source, dict)
-        ]
-        if not rag_sources:
-            raise NodeExecutionError("Deep Research에 전달할 RAG 문서가 없습니다.")
+        )
+        if not candidate_sources:
+            raise NodeExecutionError("Deep Research에 전달할 대상 논문이 없습니다.")
 
         selected: dict[str, Any] | None = None
         selected_source: dict[str, Any] | None = None
-        for source in rag_sources:
+        for source in candidate_sources:
             candidates = (source.get("paper_id"), source.get("title"))
             for candidate in candidates:
                 selection = str(candidate or "").strip()
@@ -393,6 +478,7 @@ class DeepResearchNode:
             "deep_research_answer": response,
             "deep_research_sources": deep_sources,
             "deep_research_paper_id": paper_id,
+            "deep_research_local_only": bool(state.get("deep_research_local_only")),
             "node_history": ["deep_research"],
         }
         return payload

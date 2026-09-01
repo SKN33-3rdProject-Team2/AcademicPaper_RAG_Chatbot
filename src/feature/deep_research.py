@@ -25,6 +25,9 @@ DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "paper_list" / "saved_papers.db"
 DEFAULT_EXTRACT_DB_PATH = (
     PROJECT_ROOT / "data" / "paper_extract" / "extracted_papers.db"
 )
+DEFAULT_EXTRACT_JSON_PATH = (
+    PROJECT_ROOT / "data" / "paper_extract" / "extracted_papers.json"
+)
 DEFAULT_REFERENCE_DB_PATH = (
     PROJECT_ROOT / "data" / "paper_extract" / "extracted_papers_ref.db"
 )
@@ -86,6 +89,7 @@ class PaperArtifactRepository:
         self,
         extract_db_path: str | Path = DEFAULT_EXTRACT_DB_PATH,
         *,
+        extract_json_path: str | Path | None = None,
         reference_db_path: str | Path = DEFAULT_REFERENCE_DB_PATH,
         processed_output_dir: str | Path = DEFAULT_PROCESSED_OUTPUT_DIR,
         translation_dir: str | Path = DEFAULT_TRANSLATION_DIR,
@@ -94,6 +98,10 @@ class PaperArtifactRepository:
         allow_extracted_only: bool = True,
     ) -> None:
         self.extract_db_path = Path(extract_db_path).expanduser().resolve()
+        self.extract_json_path = Path(
+            extract_json_path
+            or self.extract_db_path.with_name(DEFAULT_EXTRACT_JSON_PATH.name)
+        ).expanduser().resolve()
         self.reference_db_path = Path(reference_db_path).expanduser().resolve()
         self.processed_output_dir = (
             Path(processed_output_dir).expanduser().resolve()
@@ -191,6 +199,33 @@ class PaperArtifactRepository:
         return ready, has_summary, translation_path, summary_path
 
     def list_translated_papers(self) -> list[dict[str, Any]]:
+        # 사용자에게 보여주는 목록은 paper_extract의 JSON 카탈로그를
+        # 기준으로 한다. 논문을 선택한 뒤 실제 설명 근거는 get_paper()가
+        # extracted_papers.db에서 읽는다.
+        if self.extract_json_path.is_file():
+            try:
+                payload = json.loads(
+                    self.extract_json_path.read_text(encoding="utf-8-sig")
+                )
+            except (OSError, UnicodeError, json.JSONDecodeError) as error:
+                raise DeepResearchError(
+                    f"추출 논문 JSON을 읽지 못했습니다: {self.extract_json_path}"
+                ) from error
+            if not isinstance(payload, dict):
+                raise DeepResearchError("추출 논문 JSON은 논문 ID 기반 객체여야 합니다.")
+
+            papers: list[dict[str, Any]] = []
+            for stored_id, raw_paper in payload.items():
+                if not isinstance(raw_paper, dict):
+                    continue
+                paper_id = str(raw_paper.get("id") or stored_id).strip()
+                title = str(raw_paper.get("title") or "").strip()
+                if paper_id and title:
+                    papers.append({"id": paper_id, "title": title})
+            return papers
+
+        # 격리된 단위 테스트나 이전 데이터처럼 JSON이 없는 경우에만
+        # 기존 DB/산출물 상태 기반 목록을 사용한다.
         connection = self._connect()
         try:
             rows = connection.execute(
@@ -342,8 +377,41 @@ class KeywordPaperRetriever:
     @staticmethod
     def _keywords(text: str) -> set[str]:
         tokens = re.findall(r"[가-힣A-Za-z0-9]{2,}", text.lower())
-        stopwords = {"논문", "무엇", "어떤", "대해", "알려줘", "설명", "이것"}
-        return {token for token in tokens if token not in stopwords}
+        stopwords = {
+            "논문",
+            "무엇",
+            "어떤",
+            "대해",
+            "알려줘",
+            "설명",
+            "설명해",
+            "설명해줘",
+            "자세히",
+            "전체적으로",
+            "이것",
+        }
+        return {
+            token
+            for token in tokens
+            if token not in stopwords and not re.fullmatch(r"\d+번", token)
+        }
+
+    def _overview_evidence(self, paper: dict[str, Any]) -> list[str]:
+        evidence: list[str] = []
+        for label, field in (
+            ("초록", "abstract"),
+            ("연구 방법", "method"),
+            ("주요 결과", "result"),
+            ("결론", "conclusion"),
+        ):
+            content = str(paper.get(field) or "").strip()
+            if not content:
+                continue
+            if len(content) > self.chunk_size:
+                half = max(1, (self.chunk_size - 7) // 2)
+                content = f"{content[:half]}\n...\n{content[-half:]}"
+            evidence.append(f"[{label}]\n{content}")
+        return evidence[: self.top_k]
 
     def _split(self, text: str) -> list[str]:
         chunks: list[str] = []
@@ -370,6 +438,10 @@ class KeywordPaperRetriever:
         )
         chunks = self._split(context)
         question_keywords = self._keywords(question)
+        if not question_keywords:
+            overview = self._overview_evidence(paper)
+            if overview:
+                return overview
         ranked = sorted(
             enumerate(chunks),
             key=lambda item: (
@@ -545,7 +617,10 @@ class DeepResearchBot:
             timeout=60,
             max_retries=1,
         )
-        resolved_retriever = retriever or ChromaSummaryRetriever()
+        # Deep Research에서 사용자가 선택한 논문은 extracted_papers.db의
+        # 본문과 구조화 섹션만 근거로 설명한다. Chroma/RAG 검색은 별도의
+        # RAG 질문 경로에서 담당하며, 여기서는 외부 자료를 섞지 않는다.
+        resolved_retriever = retriever or KeywordPaperRetriever()
         answerer = LangChainPaperAnswerer(model, retriever=resolved_retriever)
         return cls(
             repository or PaperArtifactRepository(),

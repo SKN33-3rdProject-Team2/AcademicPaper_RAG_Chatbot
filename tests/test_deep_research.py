@@ -355,6 +355,30 @@ class PaperArtifactRepositoryTest(unittest.TestCase):
         self.assertTrue(papers[0]["has_translation"])
         self.assertTrue(papers[0]["has_summary"])
 
+    def test_lists_from_extract_json_but_reads_selected_content_from_db(self):
+        json_path = self.db_path.with_name("catalog.json")
+        json_path.write_text(
+            '{"2401.00002v1": {"id": "2401.00002v1", '
+            '"title": "JSON 목록 논문"}}',
+            encoding="utf-8",
+        )
+        repository = PaperArtifactRepository(
+            self.db_path,
+            extract_json_path=json_path,
+            reference_db_path=self.reference_db_path,
+            processed_output_dir=self.processed_output_dir,
+            translation_dir=self.translation_dir,
+            summary_dir=self.summary_dir,
+            allow_extracted_only=True,
+        )
+
+        papers = repository.list_translated_papers()
+        selected = repository.get_paper("2401.00002v1")
+
+        self.assertEqual(papers, [{"id": "2401.00002v1", "title": "JSON 목록 논문"}])
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected["translation_text"], "영문 추출 전문")
+
     def test_combines_database_and_markdown_artifacts(self):
         """DB 제목과 두 Markdown 본문을 공통 논문 dict로 합친다."""
         paper = self.repository.get_paper("2312.04649v1")

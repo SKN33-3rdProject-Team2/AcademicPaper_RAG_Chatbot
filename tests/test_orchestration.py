@@ -60,13 +60,25 @@ def fake_nodes():
             "sources": [{"paper_id": "paper-1", "title": "RAG Paper"}],
             "node_history": ["rag"],
         },
-        "deep_research": lambda state: {
-            "response": "일부 내용은 확인할 수 없지만 근거 기반으로 설명했습니다.",
-            "deep_research_status": "success",
-            "deep_research_answer": "일부 내용은 확인할 수 없지만 근거 기반으로 설명했습니다.",
-            "deep_research_sources": ["paper evidence"],
-            "node_history": ["deep_research"],
-        },
+        "deep_research": lambda state: (
+            {
+                "response": "설명 가능한 분석 논문 목록입니다.\n1. RAG Paper",
+                "rag_candidates": [{"paper_id": "paper-1", "title": "RAG Paper"}],
+                "rag_selection_required": False,
+                "deep_research_status": "selection_required",
+                "deep_research_local_only": True,
+                "node_history": ["deep_research"],
+            }
+            if state.get("rag_selection_required")
+            else {
+                "response": "일부 내용은 확인할 수 없지만 근거 기반으로 설명했습니다.",
+                "deep_research_status": "success",
+                "deep_research_answer": "일부 내용은 확인할 수 없지만 근거 기반으로 설명했습니다.",
+                "deep_research_sources": ["paper evidence"],
+                "deep_research_local_only": bool(state.get("deep_research_local_only")),
+                "node_history": ["deep_research"],
+            }
+        ),
     }
 
 
@@ -89,12 +101,51 @@ class StateGraphTest(unittest.TestCase):
         router = SupervisorRouter(use_llm=True)
         cases = [
             ("내 서재에 저장된 논문 목록을 보여줘", ["library"]),
+            ("설명 가능한 논문이 뭐가 있어?", ["deep_research"]),
             ("저장된 요약을 근거와 출처를 붙여 설명해줘", ["rag"]),
             ("로컬 논문들을 비교해서 심층 분석해줘", ["rag"]),
         ]
         for query, expected in cases:
             with self.subTest(query=query):
                 self.assertEqual(router.decide(initial_state(query)).steps, expected)
+
+    def test_explainable_inventory_shows_titles_without_deep_research(self):
+        graph = build_graph(router=SupervisorRouter(use_llm=False), nodes=fake_nodes())
+        result = graph.invoke(
+            initial_state("설명 가능한 논문이 뭐가 있어?"),
+            config={"configurable": {"thread_id": "test-explainable-inventory"}},
+        )
+        self.assertEqual(result["node_history"], ["deep_research", "finish"])
+        self.assertIn("1. RAG Paper", result["response"])
+        self.assertEqual(result["rag_candidates"][0]["paper_id"], "paper-1")
+
+    def test_selected_rag_title_runs_deep_research_on_the_next_turn(self):
+        graph = build_graph(router=SupervisorRouter(use_llm=False), nodes=fake_nodes())
+        config = {"configurable": {"thread_id": "test-rag-title-selection"}}
+
+        first = graph.invoke(
+            initial_state("설명 가능한 분석 논문 보여줘", thread_id="test-rag-title-selection"),
+            config=config,
+        )
+        second = graph.invoke(
+            initial_state("1번 논문 설명해줘", thread_id="test-rag-title-selection"),
+            config=config,
+        )
+
+        self.assertEqual(first["node_history"], ["deep_research", "finish"])
+        self.assertEqual(second["node_history"], ["deep_research", "finish"])
+        self.assertIn("근거 기반으로 설명했습니다", second["response"])
+
+    def test_explicit_paper_runs_deep_research_without_rag(self):
+        graph = build_graph(router=SupervisorRouter(use_llm=False), nodes=fake_nodes())
+        result = graph.invoke(
+            initial_state(
+                "이 논문을 바로 심층 분석해줘",
+                paper_ids=["paper-1"],
+            ),
+            config={"configurable": {"thread_id": "test-direct-deep-research"}},
+        )
+        self.assertEqual(result["node_history"], ["deep_research", "finish"])
 
     def test_empty_search_rebuilds_keywords_and_retries(self):
         search_calls = 0
@@ -241,6 +292,72 @@ class StateGraphTest(unittest.TestCase):
         self.assertEqual(result["deep_research_status"], "success")
         self.assertEqual(result["deep_research_paper_id"], "paper-1")
         self.assertEqual(result["deep_research_sources"], ["paper evidence"])
+
+    def test_deep_research_accepts_an_explicit_paper_without_rag(self):
+        class FakeDeepResearchAgent:
+            def __init__(self):
+                self.selected = []
+
+            def select_paper(self, selection):
+                self.selected.append(selection)
+                return {
+                    "status": "selected",
+                    "paper": {"id": "paper-1", "title": "RAG Paper"},
+                }
+
+            def ask(self, question):
+                return {
+                    "status": "success",
+                    "answer": "Direct deep answer",
+                    "sources": ["paper evidence"],
+                    "paper": {"id": "paper-1", "title": "RAG Paper"},
+                }
+
+        agent = FakeDeepResearchAgent()
+        node = DeepResearchNode(factory=lambda: agent)
+        result = node(
+            {
+                "query": "이 논문을 바로 심층 분석해줘",
+                "paper_ids": ["paper-1"],
+            }
+        )
+        self.assertEqual(agent.selected, ["paper-1"])
+        self.assertEqual(result["deep_research_status"], "success")
+        self.assertEqual(result["deep_research_paper_id"], "paper-1")
+
+    def test_deep_research_uses_the_selected_rag_candidate_number(self):
+        class FakeDeepResearchAgent:
+            def __init__(self):
+                self.selected = []
+
+            def select_paper(self, selection):
+                self.selected.append(selection)
+                return {
+                    "status": "selected",
+                    "paper": {"id": selection, "title": "Selected Paper"},
+                }
+
+            def ask(self, question):
+                return {
+                    "status": "success",
+                    "answer": "Selected answer",
+                    "sources": ["selected evidence"],
+                    "paper": {"id": self.selected[-1], "title": "Selected Paper"},
+                }
+
+        agent = FakeDeepResearchAgent()
+        node = DeepResearchNode(factory=lambda: agent)
+        result = node(
+            {
+                "query": "2번 논문 설명해줘",
+                "rag_candidates": [
+                    {"paper_id": "paper-1", "title": "First Paper"},
+                    {"paper_id": "paper-2", "title": "Second Paper"},
+                ],
+            }
+        )
+        self.assertEqual(agent.selected, ["paper-2"])
+        self.assertEqual(result["deep_research_paper_id"], "paper-2")
 
     def test_deep_research_without_evidence_returns_to_supervisor_search(self):
         deep_calls = 0
