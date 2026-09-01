@@ -92,9 +92,7 @@ AcademicPaper_RAG_Chatbot/
 │   └── log_messages.py
 ├── src/
 │   ├── config/
-│   │   ├── model_config.yaml
-│   │   ├── nvidia_config.yaml
-│   │   └── ollama_config.yaml
+│   │   └── model_config.yaml
 │   ├── feature/
 │   │   ├── supervisor_chatbot.py
 │   │   ├── search.py

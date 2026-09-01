@@ -13,12 +13,17 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from services.model_config_service import load_task_config
 from services.summary_vector_store import ChromaSummaryStore
 from tools.summary_tool import SummaryTool
 
 
 DEFAULT_PAPER_IDS = ("2007.13199v2", "2107.06493v1")
 EXTRACT_DB = PROJECT_ROOT / "data" / "paper_extract" / "extracted_papers.db"
+# 요약은 SummaryTool 이 하고, 어떤 모델이 만들었는지는 설정에서 읽어 그대로 남긴다.
+# 여기에 모델명을 적어 두면 model_config.yaml 의 summary.model 을 바꿨을 때
+# 메타데이터만 옛 이름으로 남아, 나중에 어떤 모델이 만든 요약인지 알 수 없게 된다.
+SUMMARY_MODEL = str(load_task_config("summary")["model"])
 
 
 def load_paper(paper_id: str) -> tuple[str, str]:
@@ -60,7 +65,7 @@ def main() -> int:
             paper_id=paper_id,
             title=title,
             source="extracted_markdown_for_evaluation",
-            summary_model="gemma3:4b",
+            summary_model=SUMMARY_MODEL,
             sections=sections,
         )
         print(f"[done] {paper_id}: {stored} sections")
