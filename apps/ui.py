@@ -2,9 +2,34 @@
 
 from __future__ import annotations
 
+import re
 from html import escape
 
 import streamlit as st
+
+
+# 모델은 수식을 \( \) 와 \[ \] 로 감싸 오는데, Streamlit 의 마크다운은 $ 만 수식으로
+# 읽는다. 그대로 두면 괄호만 남고 \frac 이나 \mathbb{R} 이 날것으로 보인다.
+# 요약본 파일과 딥서치 답변 양쪽에서 같은 일이 생겨 여기에 모아 둔다.
+DISPLAY_MATH_PATTERN = re.compile(r"\\\[(.+?)\\\]", re.DOTALL)
+INLINE_MATH_PATTERN = re.compile(r"\\\((.+?)\\\)", re.DOTALL)
+
+
+def _one_line(body: str) -> str:
+    """수식 안의 줄바꿈을 없앤다.
+
+    Streamlit 은 $$ 안에 줄바꿈이 있으면 수식으로 읽지 않고, 그러면 마크다운이
+    그 줄들을 앞뒤 문단과 한 덩어리로 합쳐 버린다. 수식이 통째로 날것으로 보이고
+    소제목까지 문장 사이에 끼는 이유가 이것이다. LaTeX 은 공백을 무시하므로
+    한 줄로 눌러도 식의 뜻은 그대로다.
+    """
+    return " ".join(body.split())
+
+
+def normalize_math(markdown: str) -> str:
+    """LaTeX 식 구분자를 Streamlit 이 읽는 달러 표기로 바꾼다."""
+    markdown = DISPLAY_MATH_PATTERN.sub(lambda m: f"$${_one_line(m.group(1))}$$", markdown)
+    return INLINE_MATH_PATTERN.sub(lambda m: f"${_one_line(m.group(1))}$", markdown)
 
 
 def apply_global_styles() -> None:
