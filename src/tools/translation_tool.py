@@ -14,6 +14,7 @@ from pathlib import Path
 
 from log import AppLogger, LogCode
 from services import PROJECT_ROOT
+from services.generation_options import resolve_positive_int
 from services.model_config_service import load_task_config
 from services.translation_markdown_service import (
     TranslationMarkupError,
@@ -40,6 +41,8 @@ DEFAULT_TRANSLATION_DIR = PROJECT_ROOT / str(
     TRANSLATION_CONFIG["output_directory"]
 )
 MAX_TRUNCATION_SPLIT_DEPTH = 6
+TITLE_PATTERN = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
+
 
 class TranslationError(RuntimeError):
     """번역을 완료하지 못했을 때 발생한다."""
@@ -96,6 +99,12 @@ class TranslateTool:
             )
         )
 
+    def _resolve_chunk_chars(self, chunk_chars: int | None) -> int:
+        """추가 서비스 객체를 만들지 않고 청크 크기를 검증한다."""
+        if chunk_chars is None:
+            return self._translate_service.chunk_chars
+        return resolve_positive_int("translation.chunk_chars", chunk_chars)
+
     @staticmethod
     def _failure_message(
         index: int, error: TranslateServiceError | TranslationMarkupError
@@ -150,13 +159,15 @@ class TranslateTool:
             f"{protection.text}"
         )
 
-        for attempt in range(self._translate_service.max_retries + 1):
+        max_retries = self._translate_service.max_retries
+        retry_backoff = self._translate_service.retry_backoff_seconds
+        for attempt in range(max_retries + 1):
             try:
                 translated = self._translate_service.translate(prompt)
                 restored = restore_translation_markup(translated, protection)
                 return rebuild_markdown_table(table, restored)
             except (TranslateServiceError, TranslationMarkupError) as exc:
-                if attempt >= self._translate_service.max_retries:
+                if attempt >= max_retries:
                     logger.log(
                         LogCode.TRANSLATION_TABLE_PRESERVED,
                         chunk_index=chunk_index,
@@ -174,7 +185,7 @@ class TranslateTool:
                     )
                     return table
 
-                delay = self._translate_service.retry_backoff_seconds * (2**attempt)
+                delay = retry_backoff * (2**attempt)
                 logger.log(
                     LogCode.TRANSLATION_RETRYING,
                     chunk_index=chunk_index,
@@ -182,14 +193,14 @@ class TranslateTool:
                     table_index=table_index,
                     table_total=table_total,
                     retry_attempt=attempt + 1,
-                    max_retries=self._translate_service.max_retries,
+                    max_retries=max_retries,
                     delay_seconds=delay,
                     reason=exc.reason,
                     status_code=exc.status_code,
                 )
                 self._progress(
                     f"    [Ollama] 표 구조 검증 실패로 {delay:g}초 후 재시도합니다 "
-                    f"({attempt + 1}/{self._translate_service.max_retries})."
+                    f"({attempt + 1}/{max_retries})."
                 )
                 if delay:
                     time.sleep(delay)
@@ -205,7 +216,9 @@ class TranslateTool:
         split_depth: int = 0,
     ) -> str:
         """출력 초과는 청크를 분할하고 일시적 오류만 같은 입력으로 재시도한다."""
-        for attempt in range(self._translate_service.max_retries + 1):
+        max_retries = self._translate_service.max_retries
+        retry_backoff = self._translate_service.retry_backoff_seconds
+        for attempt in range(max_retries + 1):
             try:
                 return self.translate_chunk(chunk, index=index, total=total)
             except (TranslateServiceError, TranslationMarkupError) as exc:
@@ -250,15 +263,15 @@ class TranslateTool:
                         for part in split_chunks
                     )
 
-                if not exc.retryable or attempt >= self._translate_service.max_retries:
+                if not exc.retryable or attempt >= max_retries:
                     raise
-                delay = self._translate_service.retry_backoff_seconds * (2**attempt)
+                delay = retry_backoff * (2**attempt)
                 logger.log(
                     LogCode.TRANSLATION_RETRYING,
                     chunk_index=index,
                     chunk_total=total,
                     retry_attempt=attempt + 1,
-                    max_retries=self._translate_service.max_retries,
+                    max_retries=max_retries,
                     delay_seconds=delay,
                     reason=exc.reason,
                     status_code=exc.status_code,
@@ -270,7 +283,7 @@ class TranslateTool:
                 )
                 self._progress(
                     f"    [Ollama] {retry_reason} {delay:g}초 후 재시도합니다 "
-                    f"({attempt + 1}/{self._translate_service.max_retries})."
+                    f"({attempt + 1}/{max_retries})."
                 )
                 if delay:
                     time.sleep(delay)
@@ -284,11 +297,7 @@ class TranslateTool:
         checkpoint_id: str | None = None,
     ) -> tuple[str, int]:
         """마크다운을 번역하고 실패 시 완료된 청크부터 재개한다."""
-        resolved_chunk_chars = (
-            self._translate_service.chunk_chars
-            if chunk_chars is None
-            else TranslateService(chunk_chars=chunk_chars).chunk_chars
-        )
+        resolved_chunk_chars = self._resolve_chunk_chars(chunk_chars)
         body, references = split_reference_section(
             strip_metadata_header(markdown)
         )
@@ -336,22 +345,24 @@ class TranslateTool:
             f"(청크당 최대 {resolved_chunk_chars:,}자)"
         )
 
-        for index in range(len(translated) + 1, len(chunks) + 1):
-            chunk = chunks[index - 1]
+        total_chunks = len(chunks)
+        for index, chunk in enumerate(
+            chunks[len(translated) :], start=len(translated) + 1
+        ):
             logger.log(
                 LogCode.TRANSLATION_CHUNK_STARTED,
                 chunk_index=index,
-                chunk_total=len(chunks),
+                chunk_total=total_chunks,
                 chunk_chars=len(chunk),
                 model=self._translate_service.model,
             )
             self._progress(
-                f"    [Ollama] 번역 {index}/{len(chunks)} ({len(chunk):,}자)..."
+                f"    [Ollama] 번역 {index}/{total_chunks} ({len(chunk):,}자)..."
             )
             try:
                 translated.append(
                     self._translate_chunk_with_retry(
-                        chunk, index=index, total=len(chunks)
+                        chunk, index=index, total=total_chunks
                     )
                 )
             except (TranslateServiceError, TranslationMarkupError) as exc:
@@ -361,7 +372,7 @@ class TranslateTool:
                     retryable=exc.retryable,
                     status_code=exc.status_code,
                     chunk_index=index,
-                    chunk_total=len(chunks),
+                    chunk_total=total_chunks,
                     chunk_chars=len(chunk),
                     model=self._translate_service.model,
                     error_type=type(exc).__name__,
@@ -393,7 +404,7 @@ class TranslateTool:
                         source_hash=source_hash,
                         model=self._translate_service.model,
                         chunk_chars=resolved_chunk_chars,
-                        total_chunks=len(chunks),
+                        total_chunks=total_chunks,
                         chunk_index=index,
                         translated_chunk=translated[-1],
                     )
@@ -413,7 +424,7 @@ class TranslateTool:
                 self._checkpoint_store.delete(checkpoint_id)
             except TranslationCheckpointError:
                 pass
-        return result, len(chunks)
+        return result, total_chunks
 
     @staticmethod
     def _safe_name(paper_id: str) -> str:
@@ -471,19 +482,9 @@ class TranslateTool:
         )
         resolved_title = (title or "").strip()
         if not resolved_title:
-            resolved_title = next(
-                (
-                    line[2:].strip()
-                    for line in markdown.splitlines()
-                    if line.startswith("# ") and line[2:].strip()
-                ),
-                "제목 없음",
-            )
-        resolved_chunk_chars = (
-            self._translate_service.chunk_chars
-            if chunk_chars is None
-            else TranslateService(chunk_chars=chunk_chars).chunk_chars
-        )
+            title_match = TITLE_PATTERN.search(markdown)
+            resolved_title = title_match.group(1).strip() if title_match else "제목 없음"
+        resolved_chunk_chars = self._resolve_chunk_chars(chunk_chars)
         try:
             self._translate_service.ensure_available()
         except TranslateServiceError as exc:

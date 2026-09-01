@@ -121,12 +121,16 @@ class PaperSummary:
 
     def to_markdown(self) -> str:
         parts = [
-            "---", "schema_version: 1", "artifact_type: paper_summary",
+            "---",
+            "schema_version: 1",
+            "artifact_type: paper_summary",
             f"paper_id: {json.dumps(self.id, ensure_ascii=False)}",
             f"title: {json.dumps(self.title, ensure_ascii=False)}",
             f"source: {json.dumps(self.source, ensure_ascii=False)}",
             f"summary_model: {json.dumps(self.model, ensure_ascii=False)}",
-            "language: ko", "---\n", f"# {self.title}\n",
+            "language: ko",
+            "---\n",
+            f"# {self.title}\n",
         ]
         for key, label in SUMMARY_SECTIONS:
             parts.extend((f"## {label}\n", f"{self.sections.get(key, '').strip()}\n"))
@@ -159,14 +163,44 @@ class SummaryTool:
         default_generator = nvidia_generate if self._provider == "nvidia" else generate
         self._generator = generator or default_generator
         self._model = str(SUMMARY_CONFIG["model"])
-        self._temperature = resolve_float("summary.temperature", SUMMARY_CONFIG["temperature"] if temperature is None else temperature, minimum=0.0, maximum=2.0)
-        self._max_tokens = resolve_positive_int("summary.max_tokens", SUMMARY_CONFIG["max_tokens"] if max_tokens is None else max_tokens)
-        self._timeout = resolve_float("summary.timeout", SUMMARY_CONFIG["timeout"] if timeout is None else timeout, minimum=0.1)
-        self._chunk_chars = resolve_positive_int("summary.chunk_chars", SUMMARY_CONFIG["chunk_chars"] if chunk_chars is None else chunk_chars)
-        self._chunk_max_tokens = resolve_positive_int("summary.chunk_max_tokens", SUMMARY_CONFIG["chunk_max_tokens"] if chunk_max_tokens is None else chunk_max_tokens)
-        self._max_retries = resolve_nonnegative_int("summary.max_retries", SUMMARY_CONFIG["max_retries"] if max_retries is None else max_retries)
-        self._retry_backoff_seconds = resolve_float("summary.retry_backoff_seconds", SUMMARY_CONFIG["retry_backoff_seconds"] if retry_backoff_seconds is None else retry_backoff_seconds, minimum=0.0)
-        self._summary_store = summary_store or ChromaSummaryStore()
+        self._temperature = resolve_float(
+            "summary.temperature",
+            SUMMARY_CONFIG["temperature"] if temperature is None else temperature,
+            minimum=0.0,
+            maximum=2.0,
+        )
+        self._max_tokens = resolve_positive_int(
+            "summary.max_tokens",
+            SUMMARY_CONFIG["max_tokens"] if max_tokens is None else max_tokens,
+        )
+        self._timeout = resolve_float(
+            "summary.timeout",
+            SUMMARY_CONFIG["timeout"] if timeout is None else timeout,
+            minimum=0.1,
+        )
+        self._chunk_chars = resolve_positive_int(
+            "summary.chunk_chars",
+            SUMMARY_CONFIG["chunk_chars"] if chunk_chars is None else chunk_chars,
+        )
+        self._chunk_max_tokens = resolve_positive_int(
+            "summary.chunk_max_tokens",
+            SUMMARY_CONFIG["chunk_max_tokens"]
+            if chunk_max_tokens is None
+            else chunk_max_tokens,
+        )
+        self._max_retries = resolve_nonnegative_int(
+            "summary.max_retries",
+            SUMMARY_CONFIG["max_retries"] if max_retries is None else max_retries,
+        )
+        self._retry_backoff_seconds = resolve_float(
+            "summary.retry_backoff_seconds",
+            SUMMARY_CONFIG["retry_backoff_seconds"]
+            if retry_backoff_seconds is None
+            else retry_backoff_seconds,
+            minimum=0.0,
+        )
+        # Vector DB 초기화는 실제 저장이 필요한 시점까지 미룬다.
+        self._summary_store = summary_store
         self._artifact_store = artifact_store or MarkdownSummaryArtifactStore()
         self._checkpoint_store = checkpoint_store or SummaryCheckpointStore()
 
@@ -197,7 +231,11 @@ class SummaryTool:
             value = payload.get(field, [])
             if not isinstance(value, list):
                 raise SummaryError(f"청크 요약의 {field}는 배열이어야 합니다.")
-            evidence[field] = [" ".join(item.split()) for item in value if isinstance(item, str) and item.strip()]
+            evidence[field] = [
+                " ".join(item.split())
+                for item in value
+                if isinstance(item, str) and item.strip()
+            ]
         if not any(evidence[field] for field in CHUNK_EVIDENCE_FIELDS):
             raise SummaryError("청크 요약에 유효한 근거가 없습니다.")
         return evidence
@@ -210,7 +248,11 @@ class SummaryTool:
         for key, _label in SUMMARY_SECTIONS:
             value = payload.get(key, "")
             if isinstance(value, list):
-                items = [str(item).strip().removeprefix("- ").strip() for item in value if str(item).strip()]
+                items = []
+                for item in value:
+                    text = str(item).strip()
+                    if text:
+                        items.append(text.removeprefix("- ").strip())
                 sections[key] = "\n".join(f"- {item}" for item in items)
             elif isinstance(value, str):
                 sections[key] = value.strip()
@@ -221,19 +263,48 @@ class SummaryTool:
             raise SummaryError(f"최종 요약에 비어 있는 항목이 있습니다: {', '.join(missing)}")
         return sections
 
-    def _generate_with_retry(self, prompt: str, *, phase: str, max_tokens: int, response_schema: dict[str, object], chunk_index: int | None = None, total_chunks: int | None = None) -> str:
+    def _generate_with_retry(
+        self,
+        prompt: str,
+        *,
+        phase: str,
+        max_tokens: int,
+        response_schema: dict[str, object],
+        chunk_index: int | None = None,
+        total_chunks: int | None = None,
+    ) -> str:
         attempt_max_tokens = max_tokens
         for attempt in range(self._max_retries + 1):
             try:
-                return self._generator(prompt, model=self._model, response_format=response_schema, temperature=self._temperature, max_tokens=attempt_max_tokens, timeout=self._timeout)
+                return self._generator(
+                    prompt,
+                    model=self._model,
+                    response_format=response_schema,
+                    temperature=self._temperature,
+                    max_tokens=attempt_max_tokens,
+                    timeout=self._timeout,
+                )
             except OllamaServiceError as exc:
                 if not exc.retryable or attempt >= self._max_retries:
                     raise SummaryError(f"요약 생성 실패: {exc}") from exc
                 if exc.reason == "output_truncated":
                     attempt_max_tokens *= 2
                 delay = self._retry_backoff_seconds * (2**attempt)
-                logger.log(LogCode.SUMMARY_RETRYING, phase=phase, chunk_index=chunk_index, total_chunks=total_chunks, attempt=attempt + 1, max_retries=self._max_retries, delay_seconds=delay, reason=exc.reason, next_max_tokens=attempt_max_tokens)
-                self._progress(f"    [재시도] {delay:g}초 후 요약 요청을 다시 보냅니다 ({attempt + 1}/{self._max_retries}).")
+                logger.log(
+                    LogCode.SUMMARY_RETRYING,
+                    phase=phase,
+                    chunk_index=chunk_index,
+                    total_chunks=total_chunks,
+                    attempt=attempt + 1,
+                    max_retries=self._max_retries,
+                    delay_seconds=delay,
+                    reason=exc.reason,
+                    next_max_tokens=attempt_max_tokens,
+                )
+                self._progress(
+                    f"    [재시도] {delay:g}초 후 요약 요청을 다시 보냅니다 "
+                    f"({attempt + 1}/{self._max_retries})."
+                )
                 if delay:
                     time.sleep(delay)
         raise AssertionError("unreachable")
@@ -248,7 +319,8 @@ class SummaryTool:
         return self._parse_chunk_response(response)
 
     def _reduce_summaries(self, chunk_summaries: list[dict[str, object]], *, title: str) -> dict[str, str]:
-        evidence_json = json.dumps(chunk_summaries, ensure_ascii=False, indent=2)
+        # 들여쓰기를 제거해 reduce 단계의 입력 토큰과 직렬화 비용을 줄인다.
+        evidence_json = json.dumps(chunk_summaries, ensure_ascii=False, separators=(",", ":"))
         response = self._generate_with_retry(
             f"{FINAL_SUMMARY_SYSTEM_PROMPT}\n\n논문 제목: {title}\n\n[청크별 근거]\n{evidence_json}",
             phase="reduce", max_tokens=self._max_tokens,
@@ -274,9 +346,14 @@ class SummaryTool:
                 )
             except SummaryCheckpointError as exc:
                 raise SummaryError("요약 체크포인트를 불러오지 못했습니다.") from exc
-        chunk_summaries = [self._parse_chunk_response(serialized) for serialized in serialized_summaries]
+        chunk_summaries = [
+            self._parse_chunk_response(serialized) for serialized in serialized_summaries
+        ]
         if serialized_summaries:
-            self._progress(f"  - 체크포인트에서 {len(serialized_summaries)}/{total_chunks}개 청크 요약을 복구했습니다.")
+            self._progress(
+                f"  - 체크포인트에서 {len(serialized_summaries)}/{total_chunks}개 "
+                "청크 요약을 복구했습니다."
+            )
 
         for index in range(len(chunk_summaries) + 1, total_chunks + 1):
             chunk = chunks[index - 1]
@@ -289,7 +366,10 @@ class SummaryTool:
                     self._checkpoint_store.save_chunk(
                         paper_id, source_hash=source_hash, model=self._model,
                         chunk_chars=self._chunk_chars, total_chunks=total_chunks,
-                        chunk_index=index, chunk_summary=json.dumps(evidence, ensure_ascii=False, indent=2),
+                        chunk_index=index,
+                        chunk_summary=json.dumps(
+                            evidence, ensure_ascii=False, separators=(",", ":")
+                        ),
                     )
                 except SummaryCheckpointError as exc:
                     raise SummaryError("요약 청크는 생성했지만 체크포인트 저장에 실패했습니다.") from exc
@@ -335,14 +415,39 @@ class SummaryTool:
             logger.log(LogCode.SUMMARY_FAILED, paper_id=paper_id, model=self._model, reason=getattr(cause, "reason", "summary_generation_failed"), retryable=getattr(cause, "retryable", False), status_code=getattr(cause, "status_code", None), error_type=type(exc).__name__, error=str(exc))
             raise
 
-        summary = PaperSummary(id=paper_id, title=title, source=source, model=self._model, sections=sections)
-        logger.log(LogCode.SUMMARY_SUCCEEDED, paper_id=summary.id, title=summary.title, model=summary.model, section_count=len(summary.sections), output_chars=len(summary.to_markdown()))
+        summary = PaperSummary(
+            id=paper_id,
+            title=title,
+            source=source,
+            model=self._model,
+            sections=sections,
+        )
+        summary_markdown = summary.to_markdown()
+        logger.log(
+            LogCode.SUMMARY_SUCCEEDED,
+            paper_id=summary.id,
+            title=summary.title,
+            model=summary.model,
+            section_count=len(summary.sections),
+            output_chars=len(summary_markdown),
+        )
         try:
-            summary.markdown_path = self._artifact_store.save(paper_id=summary.id, markdown=summary.to_markdown())
+            summary.markdown_path = self._artifact_store.save(
+                paper_id=summary.id, markdown=summary_markdown
+            )
         except SummaryArtifactError as exc:
             raise SummaryError("요약은 생성했지만 마크다운 파일 저장에 실패했습니다. 상세 원인은 로그 파일을 확인해 주세요.") from exc
         try:
-            stored_count = self._summary_store.save(paper_id=summary.id, title=summary.title, source=summary.source, summary_model=summary.model, sections=summary.sections)
+            summary_store = self._summary_store
+            if summary_store is None:
+                summary_store = self._summary_store = ChromaSummaryStore()
+            stored_count = summary_store.save(
+                paper_id=summary.id,
+                title=summary.title,
+                source=summary.source,
+                summary_model=summary.model,
+                sections=summary.sections,
+            )
         except SummaryStoreError as exc:
             raise SummaryError(f"요약은 {summary.markdown_path}에 저장했지만 벡터 DB 저장에 실패했습니다. 상세 원인은 로그 파일을 확인해 주세요.") from exc
         try:
