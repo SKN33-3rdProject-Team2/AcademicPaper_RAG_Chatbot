@@ -1,5 +1,6 @@
 # src/feature/search_list.py
 import os
+import sys
 import json
 import sqlite3
 import requests
@@ -10,14 +11,22 @@ from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
-# 루트 기준 data/paper_list 및 data/paper_save 경로 설정
-ROOT_DIR = Path(__file__).resolve().parent.parent.parent
-DATA_LIST_DIR = os.path.join(ROOT_DIR, "data", "paper_list")
-PDF_SAVE_DIR = os.path.join(ROOT_DIR, "data", "paper_save")
+# ---------------------------------------------------------------------
+# [모듈 임포트 경로 설정: tests 및 프로젝트 루트 기준 절대 경로 보정]
+# ---------------------------------------------------------------------
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+SRC_DIR = PROJECT_ROOT / "src"
+for _path in (SRC_DIR, PROJECT_ROOT):
+    if str(_path) not in sys.path:
+        sys.path.append(str(_path))
 
-DB_FILE = os.path.join(DATA_LIST_DIR, "saved_papers.db")
-JSON_FILE = os.path.join(DATA_LIST_DIR, "saved_papers.json")
-DOWNLOADED_PDF_JSON = os.path.join(PDF_SAVE_DIR, "downloaded_pdfs.json")
+# 기존 os.path 문자열 연산을 Path 객체로 일원화하여 OS 호환성 및 가독성 강화
+DATA_LIST_DIR = PROJECT_ROOT / "data" / "paper_list"
+PDF_SAVE_DIR = PROJECT_ROOT / "data" / "paper_save"
+
+DB_FILE = DATA_LIST_DIR / "saved_papers.db"
+JSON_FILE = DATA_LIST_DIR / "saved_papers.json"
+DOWNLOADED_PDF_JSON = PDF_SAVE_DIR / "downloaded_pdfs.json"
 
 load_dotenv()
 OPENAI_CHAT_MODEL = "gpt-5.6-luna"
@@ -72,11 +81,11 @@ def parse_user_interaction(user_input: str, total_count: int) -> dict:
 
 class LocalLibraryBot:
     def __init__(self):
-        os.makedirs(PDF_SAVE_DIR, exist_ok=True)
-        os.makedirs(DATA_LIST_DIR, exist_ok=True)
+        PDF_SAVE_DIR.mkdir(parents=True, exist_ok=True)
+        DATA_LIST_DIR.mkdir(parents=True, exist_ok=True)
 
     def get_all_json_ids(self) -> List[str]:
-        if not os.path.exists(JSON_FILE): return []
+        if not JSON_FILE.exists(): return []
         with open(JSON_FILE, 'r', encoding='utf-8') as f:
             try:
                 return list(json.load(f).keys())
@@ -84,7 +93,7 @@ class LocalLibraryBot:
                 return []
 
     def search_json(self, query: str) -> List[str]:
-        if not os.path.exists(JSON_FILE): return []
+        if not JSON_FILE.exists(): return []
         with open(JSON_FILE, 'r', encoding='utf-8') as f:
             try:
                 json_data = json.load(f)
@@ -114,13 +123,13 @@ class LocalLibraryBot:
 
     def update_downloaded_pdf_json(self, paper_title: str, filepath: str):
         downloaded_data = {}
-        if os.path.exists(DOWNLOADED_PDF_JSON):
+        if DOWNLOADED_PDF_JSON.exists():
             with open(DOWNLOADED_PDF_JSON, 'r', encoding='utf-8') as f:
                 try:
                     downloaded_data = json.load(f)
                 except json.JSONDecodeError:
                     pass
-        downloaded_data[os.path.basename(filepath)] = {"title": paper_title, "filepath": filepath}
+        downloaded_data[os.path.basename(filepath)] = {"title": paper_title, "filepath": str(filepath)}
         with open(DOWNLOADED_PDF_JSON, 'w', encoding='utf-8') as f:
             json.dump(downloaded_data, f, ensure_ascii=False, indent=4)
 
@@ -129,9 +138,9 @@ class LocalLibraryBot:
         if not url: return "no_url"
         pdf_url = url.replace("abs", "pdf") + ".pdf" if not url.endswith(".pdf") else url
         safe_title = "".join(c for c in paper['title'] if c.isalnum() or c in " _-").rstrip()
-        filepath = os.path.join(PDF_SAVE_DIR, f"{safe_title[:60]}.pdf")
+        filepath = PDF_SAVE_DIR / f"{safe_title[:60]}.pdf"
 
-        if os.path.exists(filepath): return "exists"
+        if filepath.exists(): return "exists"
         print(f"\n[System] 📥 '{safe_title[:30]}...' 다운로드 중...")
         try:
             response = requests.get(pdf_url, stream=True, timeout=10)
@@ -139,7 +148,7 @@ class LocalLibraryBot:
             with open(filepath, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192): f.write(chunk)
             print(f"✅ 다운로드 완료! 저장 위치: {filepath}")
-            self.update_downloaded_pdf_json(paper['title'], filepath)
+            self.update_downloaded_pdf_json(paper['title'], str(filepath))
             return "success"
         except Exception as e:
             print(f"❌ 다운로드 실패: {e}")
@@ -153,35 +162,31 @@ class LocalLibraryBot:
         existing_papers, valid_to_download = [], []
         for idx, target in enumerate(papers):
             safe_title = "".join(c for c in target['title'] if c.isalnum() or c in " _-").rstrip()
-            if os.path.exists(os.path.join(PDF_SAVE_DIR, f"{safe_title[:60]}.pdf")):
+            if (PDF_SAVE_DIR / f"{safe_title[:60]}.pdf").exists():
                 existing_papers.append((idx + 1, target))
             else:
                 valid_to_download.append((idx + 1, target))
 
+        # [방어 로직 최적화] 파일 중복 검사 및 사용자 확인 프롬프트 간소화
         if existing_papers:
             exist_nums_str = ", ".join([str(p[0]) for p in existing_papers])
-            print(f"\n⚠️ [안내] 대상 논문 중 {exist_nums_str}번은 이미 'data/paper_save' 폴더에 존재합니다.")
+            print(f"\n[System] ⚠️ 대상 논문 중 {exist_nums_str}번은 이미 저장되어 있습니다.")
 
             if valid_to_download:
                 valid_nums_str = ", ".join([str(p[0]) for p in valid_to_download])
-                choice = input(f"👉 이미 존재하는 논문을 제외하고 나머지({valid_nums_str}번)만 다운로드할까요? (예 / 아니오): ").strip().lower()
+                choice = input(f"👉 이미 존재하는 파일을 제외하고 나머지({valid_nums_str}번)만 다운로드할까요? (예/아니오): ").strip().lower()
             else:
-                choice = input("👉 선택하신 모든 논문이 이미 존재합니다. 다시 다운로드(덮어쓰기) 하시겠습니까? (예 / 아니오): ").strip().lower()
+                choice = input("👉 선택하신 모든 논문이 이미 존재합니다. 덮어쓰기하여 다시 다운로드 하시겠습니까? (예/아니오): ").strip().lower()
 
-            positive_keywords = ["예", "응", "그래", "어", "ㅇㅇ", "맞아", "제외", "해", "해줘", "진행", "다운", "네", "y", "yes", "오케이",
-                                 "ok"]
-            is_positive = any(w in choice for w in positive_keywords) or any(choice == w for w in positive_keywords)
-
-            if any(neg in choice for neg in ["아니", "취소", "그만", "stop", "no"]):
-                print("[System] 다운로드를 취소합니다.")
-                return
-
-            if is_positive or len(choice.strip()) > 0:
-                if not valid_to_download and "제외" not in choice:
+            # 사용자가 명확히 '예'를 응답하지 않은 경우 중복 파일 다운로드 스킵
+            if not any(w in choice for w in ["예", "응", "y", "yes", "네", "진행"]):
+                print("[System] 기존 파일을 유지하며, 대상 파일들의 다운로드를 건너뜁니다.")
+                if not valid_to_download:
+                    return
+            else:
+                # 덮어쓰기를 명시적으로 허용한 경우, 이미 존재하는 파일들도 다운로드 큐에 포함
+                if not valid_to_download:
                     valid_to_download = existing_papers
-            else:
-                print("[System] 다운로드를 취소합니다.")
-                return
 
         for num, paper in valid_to_download:
             if self.download_pdf(paper) == "exists":
@@ -198,7 +203,6 @@ class LocalLibraryBot:
         print(f"📚 내 서재(Local JSON/DB) 관리 챗봇 (Model: {OPENAI_CHAT_MODEL})")
         print("=" * 50)
 
-        # 초기 실행 플래그 및 현재 검색된 papers를 관리하기 위한 변수
         current_papers = []
         current_intent = "search"
         current_keyword = ""
@@ -228,14 +232,12 @@ class LocalLibraryBot:
 
                 if current_intent == "exit": print("\n[System] 서재 챗봇을 종료합니다."); break
 
-                matched_ids = self.get_all_json_ids() if current_intent in ["show_all",
-                                                                            "download_all"] else self.search_json(
+                matched_ids = self.get_all_json_ids() if current_intent in ["show_all", "download_all"] else self.search_json(
                     current_keyword if current_keyword.strip() else user_input)
 
                 if not matched_ids:
                     query_display = current_keyword if current_keyword.strip() else user_input
-                    print(
-                        f"\n[System] ❌ 내 서재에 '{query_display}'와(과) 일치하는 논문이 없습니다.\n💡 안내: 외부 검색 봇('search.py')을 통해 먼저 검색/저장을 진행해 주세요.")
+                    print(f"\n[System] ❌ 내 서재에 '{query_display}'와(과) 일치하는 논문이 없습니다.\n💡 안내: 외부 검색 봇('search.py')을 통해 먼저 검색/저장을 진행해 주세요.")
                     continue
 
                 current_papers = self.fetch_full_data_from_db(matched_ids)
@@ -243,10 +245,9 @@ class LocalLibraryBot:
                 if wants_download or current_intent == "download_all":
                     print(f"\n[System] 📚 조건에 맞는 총 {len(current_papers)}개의 논문을 바로 다운로드합니다.")
                     self.process_downloads(current_papers)
-                    current_papers = []  # 다운로드 완료 후 초기 화면으로 리셋
+                    current_papers = []
                     continue
 
-            # 💡 리스트 출력 및 사용자 인터렉션 루프
             print(f"\n[System] 📚 내 서재에서 총 {len(current_papers)}개의 논문을 찾았습니다.")
             print("-" * 60)
             for idx, p in enumerate(current_papers):
@@ -265,15 +266,13 @@ class LocalLibraryBot:
                 continue
 
             if not ans.strip():
-                current_papers = []  # 엔터 입력 시 리스트 초기화 후 첫 화면으로
+                current_papers = []
                 continue
 
             action_data = parse_user_interaction(ans, len(current_papers))
             action = action_data.get("action")
 
-            # 💡 [신규 기능] 리스트 화면에서 곧바로 새로운 검색을 요구한 경우
-            if action == "search" or (
-                    not action_data.get("selected_numbers") and action == "cancel" and len(ans.strip()) > 2):
+            if action == "search" or (not action_data.get("selected_numbers") and action == "cancel" and len(ans.strip()) > 2):
                 new_query = action_data.get("search_keyword") or ans.strip()
                 print(f"\n[System] 🔍 '{new_query}' 키워드로 서재 내에서 다시 검색합니다...")
                 matched_ids = self.search_json(new_query)
