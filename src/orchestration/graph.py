@@ -24,6 +24,30 @@ from orchestration.routing import SupervisorRouter, next_route
 from orchestration.state import Route, WorkflowState
 
 
+def _unique_paper_sources(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    unique: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for source in sources:
+        paper_id = str(source.get("paper_id") or "").strip()
+        title = str(source.get("title") or "").strip()
+        key = paper_id or title.casefold()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(dict(source))
+    return unique
+
+
+def _format_paper_choices(sources: list[dict[str, Any]]) -> str:
+    lines = [
+        f"{index}. {source.get('title') or source.get('paper_id') or '제목 없음'}"
+        for index, source in enumerate(sources, 1)
+    ]
+    return "\n".join(
+        ["설명 가능한 논문 목록입니다.", *lines, "번호나 제목을 선택해 설명을 요청해 주세요."]
+    )
+
+
 def _guarded(name: str, node: Callable[[WorkflowState], dict[str, Any]]):
     @traceable(name=f"node.{name}", run_type="tool")
     def invoke(state: WorkflowState) -> dict[str, Any]:
@@ -198,6 +222,17 @@ def build_graph(
         # Supervisor가 검색·추출·번역·요약을 거쳐 RAG를 다시 실행한다.
         if last_node == "rag":
             if state.get("sources"):
+                if state.get("rag_selection_required"):
+                    candidates = _unique_paper_sources(list(state["sources"]))
+                    return {
+                        "route": "finish",
+                        "route_reason": "RAG 후보 논문을 보여주고 사용자 선택 대기",
+                        "remaining_steps": [],
+                        "rag_candidates": candidates,
+                        "rag_selection_required": False,
+                        "response": _format_paper_choices(candidates),
+                        "sources": [],
+                    }
                 return {
                     "route": "deep_research",
                     "route_reason": "RAG 관련 문서를 Deep Research에 전달",
@@ -230,6 +265,21 @@ def build_graph(
         # Deep Research가 전달된 문서를 충분히 설명하지 못하면 Supervisor가
         # 추가 논문을 검색하고 전체 처리 흐름을 다시 수행한다.
         if last_node == "deep_research":
+            if state.get("deep_research_status") in {"selection_required", "empty"}:
+                return {
+                    "route": "finish",
+                    "route_reason": "로컬 분석 논문 목록을 보여주고 사용자 선택 대기",
+                    "remaining_steps": [],
+                }
+
+            if state.get("deep_research_local_only"):
+                return {
+                    "route": "finish",
+                    "route_reason": "paper_extract DB의 선택 논문 설명 완료",
+                    "remaining_steps": [],
+                    "deep_research_local_only": False,
+                }
+
             deep_sufficient = (
                 state.get("deep_research_status") == "success"
                 and bool(state.get("deep_research_sources"))
@@ -273,7 +323,9 @@ def build_graph(
         decision = supervisor_router.decide(state)
         steps: list[Route] = list(decision.steps)
         route = steps.pop(0)
-        return dispatch(state, route, steps, reason=decision.reason)
+        routed = dispatch(state, route, steps, reason=decision.reason)
+        routed["rag_selection_required"] = decision.await_selection
+        return routed
 
     def finish(state: WorkflowState) -> dict[str, Any]:
         response = _format_response(state)
