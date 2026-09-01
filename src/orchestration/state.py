@@ -36,6 +36,9 @@ class WorkflowState(TypedDict, total=False):
     route_reason: str
     remaining_steps: list[Route]
     thread_id: str
+    retry_counts: dict[str, int]
+    max_retries: int
+    max_steps: int
 
     keywords: list[str]
     paper_ids: list[str]
@@ -60,6 +63,8 @@ def initial_state(
     *,
     thread_id: str = "default",
     paper_ids: list[str] | None = None,
+    max_retries: int = 1,
+    max_steps: int = 12,
 ) -> WorkflowState:
     """Create the minimal valid state accepted by the compiled graph."""
 
@@ -72,6 +77,9 @@ def initial_state(
         "thread_id": thread_id,
         "paper_ids": list(paper_ids or []),
         "remaining_steps": [],
+        "retry_counts": {},
+        "max_retries": max(0, max_retries),
+        "max_steps": max(1, max_steps),
         "node_history": [],
         "errors": [],
     }

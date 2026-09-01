@@ -16,20 +16,15 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 load_dotenv(PROJECT_ROOT / ".env")
 
-from orchestration.graph import build_graph
-from orchestration.state import initial_state
+from feature.supervisor_chatbot import SupervisorChatbot
 
 
 def run(query: str, *, thread_id: str, paper_ids: list[str] | None = None) -> dict:
-    graph = build_graph()
-    config = {
-        "configurable": {"thread_id": thread_id},
-        "run_name": "academic-paper-stategraph",
-        "tags": ["academic-paper", "langgraph"],
-    }
-    return graph.invoke(
-        initial_state(query, thread_id=thread_id, paper_ids=paper_ids),
-        config=config,
+    chatbot = SupervisorChatbot()
+    return chatbot.invoke(
+        query,
+        thread_id=thread_id,
+        paper_ids=paper_ids,
     )
 
 

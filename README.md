@@ -48,7 +48,7 @@ arXiv와 PDF 학술 논문을 수집·파싱·인덱싱하여 논문 검색, 번
 | Agent Workflow | LangGraph |
 | Paper Search | arXiv API |
 | PDF Parsing | PyMuPDF, NVIDIA Build API |
-| Local LLM | Ollama, `qwen2.5:3b` |
+| Local LLM | Ollama (`qwen2.5:3b`, `translategemma:4b`, `gemma3:4b`) |
 | Embedding | Hugging Face `BAAI/bge-m3` |
 | Vector DB | ChromaDB |
 | Architecture | RAG, Human-in-the-Loop, Multi-Agent |
@@ -60,7 +60,7 @@ arXiv와 PDF 학술 논문을 수집·파싱·인덱싱하여 논문 검색, 번
 ```text
 Project-Team-2/
 ├── .env                 # 환경변수 파일 (Git 제외)
-├── .env.example         # 환경변수 예시 템플릿
+├── .env.sample          # 환경변수 예시 템플릿
 ├── README.md            # 프로젝트 설명서
 └── src/                 # 소스코드 최상위 폴더
     ├── feature/         # 피처 생성 및 가공 관련 기능을 구현할 폴더
@@ -70,7 +70,7 @@ Project-Team-2/
 ### 디렉터리 및 파일 설명
 
 - `.env`: API 키 등 외부에 공개하면 안 되는 로컬 환경변수를 관리합니다. Git에는 포함하지 않습니다.
-- `.env.example`: 프로젝트 실행에 필요한 환경변수의 이름과 예시 값을 공유합니다.
+- `.env.sample`: 프로젝트 실행에 필요한 환경변수의 이름과 예시 값을 공유합니다.
 - `README.md`: 프로젝트 개요, 설정 방법, 실행 방법 및 협업 규칙을 기록합니다.
 - `src/feature/`: 피처 생성 및 가공과 관련된 기능과 함수를 구현합니다.
 - `src/tools/`: 여러 기능에서 공통으로 사용하는 도구와 유틸리티 함수를 구현합니다.
@@ -79,53 +79,95 @@ Project-Team-2/
 
 ### 1. 환경변수 설정
 
-저장소를 내려받은 뒤 `.env.example` 파일을 복사하여 `.env` 파일을 생성합니다.
+저장소를 내려받은 뒤 `.env.sample` 파일을 복사하여 `.env` 파일을 생성합니다.
 
 #### macOS / Linux
 
 ```bash
-cp .env.example .env
+cp .env.sample .env
 ```
 
 #### Windows PowerShell
 
 ```powershell
-Copy-Item .env.example .env
+Copy-Item .env.sample .env
 ```
 
-`.env.example` 파일은 다음과 같이 구성합니다.
+`.env.sample` 파일에는 OpenAI, NVIDIA 및 LangSmith 연결에 필요한 환경변수 이름이 정의되어 있습니다. 각 값을 본인의 키로 변경합니다.
 
 ```dotenv
-# Ollama
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=qwen2.5:3b
+OPENAI_API_KEY=your_openai_api_key
+NVIDIA_API_KEY=your_nvidia_build_key
+LANGSMITH_API_KEY=your_langsmith_api_key
 ```
 
-> 실제 API 키, 비밀번호 등 민감한 정보는 `.env.example`이나 소스코드에 작성하지 않습니다.
+Ollama 서버 주소와 기능별 모델은 `src/config/model_config.yaml`에서 관리합니다.
 
-### 2. Ollama 설치
+> 실제 API 키, 비밀번호 등 민감한 정보는 `.env.sample`이나 소스코드에 작성하지 않습니다.
 
-Windows PowerShell에서 다음 명령어를 실행합니다.
+### 2. Ollama 설치 및 실행
+
+Ollama는 기본적으로 `http://localhost:11434`에서 실행됩니다. 운영체제에 맞는 터미널에서 아래 명령어를 실행합니다.
+
+#### macOS
+
+Terminal에서 공식 설치 스크립트를 실행합니다.
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+```
+
+설치 후 Ollama 앱이 실행되지 않았다면 다음 명령어로 실행합니다.
+
+```bash
+open -a Ollama
+```
+
+GUI 앱을 사용하지 않고 현재 Terminal에서 직접 서버를 실행하려면 다음 명령어를 사용합니다.
+
+```bash
+ollama serve
+```
+
+> `open -a Ollama`로 앱이 이미 실행 중이면 `ollama serve`를 다시 실행할 필요가 없습니다.
+
+#### Windows
+
+PowerShell에서 공식 설치 스크립트를 실행합니다.
 
 ```powershell
 irm https://ollama.com/install.ps1 | iex
 ```
 
-> 위 명령어는 Python 명령어가 아닌 Windows PowerShell 명령어입니다.
+설치가 완료되면 PowerShell을 닫았다가 다시 실행합니다. Ollama는 일반적으로 백그라운드에서 자동 실행됩니다. 실행되지 않았다면 시작 메뉴에서 **Ollama**를 실행하거나 PowerShell에서 다음 명령어를 실행합니다.
 
-설치가 완료되면 PowerShell을 종료한 후 다시 실행합니다.
+```powershell
+ollama serve
+```
 
-macOS 또는 Linux 사용자는 [Ollama 공식 다운로드 페이지](https://ollama.com/download)에서 운영체제에 맞는 설치 방법을 확인합니다.
+> Ollama가 이미 백그라운드에서 실행 중이면 `ollama serve`를 다시 실행할 필요가 없습니다.
 
-### 3. Qwen2.5 3B 모델 다운로드
+### 3. 프로젝트용 Ollama 모델 다운로드
 
-터미널 또는 PowerShell에서 다음 명령어를 실행합니다.
+이 프로젝트는 기능별로 다음 세 모델을 사용합니다.
+
+| 기능 | 모델 |
+| --- | --- |
+| arXiv 검색 키워드 생성 | `qwen2.5:3b` |
+| 논문 번역 | `translategemma:4b` |
+| 논문 요약 | `gemma3:4b` |
+
+macOS Terminal 또는 Windows PowerShell에서 아래 명령어를 차례대로 실행합니다.
 
 ```bash
 ollama pull qwen2.5:3b
+ollama pull translategemma:4b
+ollama pull gemma3:4b
 ```
 
-### 4. 설치 확인
+모델 이름은 [`src/config/model_config.yaml`](src/config/model_config.yaml)의 설정과 동일해야 합니다.
+
+### 4. Ollama 실행 확인
 
 설치된 모델 목록을 확인합니다.
 
@@ -133,11 +175,63 @@ ollama pull qwen2.5:3b
 ollama list
 ```
 
-모델을 직접 실행하여 정상 작동 여부를 확인합니다.
+목록에 `qwen2.5:3b`, `translategemma:4b`, `gemma3:4b`가 모두 표시되어야 합니다.
+
+모델 응답을 직접 확인합니다.
 
 ```bash
-ollama run qwen2.5:3b
+ollama run qwen2.5:3b "retrieval augmented generation 검색 키워드를 만들어줘"
 ```
+
+Ollama API 서버의 실행 상태를 확인합니다.
+
+#### macOS
+
+```bash
+curl http://localhost:11434/api/tags
+```
+
+#### Windows PowerShell
+
+```powershell
+Invoke-RestMethod http://localhost:11434/api/tags
+```
+
+모델 목록이 JSON 형태로 반환되면 프로젝트에서 Ollama를 사용할 준비가 완료된 것입니다.
+
+### 5. Supervisor 챗봇 실행
+
+프로젝트 루트에서 다음 명령어를 실행한 뒤 질문을 입력합니다.
+
+#### macOS
+
+```bash
+python3 main.py
+```
+
+#### Windows PowerShell
+
+```powershell
+python main.py
+```
+
+질문을 명령어에 바로 전달할 수도 있습니다.
+
+#### macOS
+
+```bash
+python3 main.py "arXiv에서 RAG 관련 논문을 검색해줘"
+```
+
+#### Windows PowerShell
+
+```powershell
+python main.py "arXiv에서 RAG 관련 논문을 검색해줘"
+```
+
+> 실행 전에 프로젝트 Python 의존성과 `.env` 설정을 완료해야 합니다. LangGraph 관련 의존성은 `requirements-orchestration.txt`에 정의되어 있습니다.
+
+Ollama 설치 관련 세부 사항은 [macOS 공식 문서](https://docs.ollama.com/macos)와 [Windows 공식 문서](https://docs.ollama.com/windows)를 참고합니다.
 
 ---
 
