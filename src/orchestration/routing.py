@@ -27,7 +27,7 @@ ExecutableRoute = Literal[
 class SupervisorDecision(BaseModel):
     """A validated execution plan emitted by the supervisor."""
 
-    steps: list[ExecutableRoute] = Field(min_length=1, max_length=6)
+    steps: list[ExecutableRoute] = Field(min_length=1, max_length=8)
     reason: str
 
 
@@ -54,6 +54,12 @@ Rules:
 6. Prefer library for list/search requests about locally saved papers.
 7. For deep analysis or comparison, start with [rag]. The supervisor will send
    a retrieved paper to deep_research only after RAG finds a source.
+8. A request that chains multiple stages (e.g. "find the latest 5 LLM papers,
+   translate and summarize them, then explain them") is ONE plan, not
+   separate requests — emit the full ordered chain in one call, for example
+   [keyword, search, download, extract, translate, summarize, rag]. Only
+   include the stages actually implied by the request and skip stages whose
+   artifacts already exist per "Available state".
 """
 
 
@@ -80,6 +86,50 @@ class SupervisorRouter:
         query = state["query"].casefold()
         has_extraction = bool(state.get("extracted_records"))
         has_translation = bool(state.get("translated_paths"))
+        has_candidates = bool(
+            state.get("selected_papers")
+            or state.get("search_results")
+            or state.get("library_results")
+        )
+
+        # A request can chain multiple stages in one sentence (e.g. "찾아서
+        # 번역 요약해주고 설명해줘" = search + translate + summarize + explain).
+        # Detect that BEFORE the single-purpose keyword checks below, which
+        # would otherwise stop at whichever keyword happens to match first
+        # and silently drop the rest of the request.
+        wants_new_papers = any(
+            term in query
+            for term in ("arxiv", "외부 검색", "논문 찾아", "찾아서", "찾아줘", "검색해", "다운로드", "download")
+        )
+        wants_translate = any(term in query for term in ("번역", "translate"))
+        wants_summarize = any(term in query for term in ("요약", "summar", "summary"))
+        wants_qa = any(term in query for term in ("근거", "출처", "질문", "설명해"))
+        wants_deep = any(
+            term in query for term in ("딥리서치", "심층", "비교", "분석", "deep research")
+        )
+        if wants_new_papers and (wants_translate or wants_summarize or wants_qa or wants_deep):
+            steps: list[ExecutableRoute] = []
+            if any(
+                term in query
+                for term in ("arxiv", "외부 검색", "논문 찾아", "찾아서", "찾아줘", "검색해")
+            ):
+                steps += ["keyword", "search"]
+            if wants_translate or wants_summarize:
+                if not has_extraction:
+                    steps.append("download")
+                    steps.append("extract")
+                steps.append("translate")
+                if wants_summarize:
+                    steps.append("summarize")
+            elif any(term in query for term in ("다운로드", "download")):
+                steps.append("download")
+            if wants_qa or wants_deep:
+                steps.append("rag")
+            ordered: list[ExecutableRoute] = []
+            for step in steps:
+                if step not in ordered:
+                    ordered.append(step)
+            return SupervisorDecision(steps=ordered[:8], reason="검색부터 설명까지 이어지는 복합 요청")
 
         explicit_qa_signals = ("근거", "출처", "질문", "설명해")
         stored_content_signals = ("저장", "요약", "서재")
@@ -88,7 +138,7 @@ class SupervisorRouter:
         ):
             return SupervisorDecision(steps=["rag"], reason="저장된 요약 기반 질의응답")
         if any(term in query for term in ("번역", "translate")):
-            steps: list[ExecutableRoute] = [] if has_extraction else ["extract"]
+            steps = [] if has_extraction else ["extract"]
             steps.append("translate")
             return SupervisorDecision(steps=steps, reason="번역 요청")
         if any(term in query for term in ("요약", "summar", "summary")):
@@ -99,10 +149,10 @@ class SupervisorRouter:
                 steps.append("translate")
             steps.append("summarize")
             return SupervisorDecision(steps=steps, reason="요약 파이프라인 요청")
-        if any(term in query for term in ("arxiv", "외부 검색", "논문 찾아", "검색해")):
+        if any(term in query for term in ("arxiv", "외부 검색", "논문 찾아", "찾아서", "찾아줘", "검색해")):
             return SupervisorDecision(steps=["keyword", "search"], reason="외부 논문 검색 요청")
         if any(term in query for term in ("다운로드", "download")):
-            steps = ["download"] if state.get("selected_papers") else ["library", "download"]
+            steps = ["download"] if has_candidates else ["library", "download"]
             return SupervisorDecision(steps=steps, reason="논문 다운로드 요청")
         if any(term in query for term in ("딥리서치", "심층", "비교", "분석", "deep research")):
             return SupervisorDecision(steps=["rag"], reason="저장 문서 검색 후 심층 분석")

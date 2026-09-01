@@ -44,18 +44,28 @@ def _format_response(state: WorkflowState) -> str:
         return "작업을 완료하지 못했습니다. " + " | ".join(state["errors"])
     if state.get("response"):
         return state["response"]
-    if state.get("summaries"):
+
+    # search_results/library_results/etc. are conversational memory that stays
+    # in state across turns, so only surface the artifact whose node actually
+    # ran THIS turn — otherwise a later turn re-prints an earlier turn's result.
+    history = state.get("node_history", [])
+    if "summarize" in history and state.get("summaries"):
         paths = [item.get("markdown_path") for item in state["summaries"] if item.get("markdown_path")]
         return f"논문 {len(state['summaries'])}편의 요약을 완료했습니다." + (
             "\n" + "\n".join(str(path) for path in paths) if paths else ""
         )
-    if state.get("translated_paths"):
+    if "translate" in history and state.get("translated_paths"):
         return "번역을 완료했습니다.\n" + "\n".join(state["translated_paths"])
-    if state.get("extracted_records"):
+    if "extract" in history and state.get("extracted_records"):
         return f"논문 {len(state['extracted_records'])}편의 본문 추출을 완료했습니다."
-    if state.get("downloaded_paths"):
+    if "download" in history and state.get("downloaded_paths"):
         return "다운로드를 완료했습니다.\n" + "\n".join(state["downloaded_paths"])
-    papers = state.get("search_results") or state.get("library_results") or []
+    if "search" in history and state.get("search_results"):
+        papers = state["search_results"]
+    elif "library" in history and state.get("library_results"):
+        papers = state["library_results"]
+    else:
+        papers = []
     if papers:
         lines = [f"{index}. {paper.get('title', '제목 없음')}" for index, paper in enumerate(papers, 1)]
         return "\n".join(lines)
