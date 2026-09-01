@@ -1,8 +1,9 @@
-"""RAG-only LangChain chain over the existing summary vector store."""
+"""RAG chain that answers from extracted paper-text chunks."""
 
 from __future__ import annotations
 
 import os
+import sqlite3
 from typing import Any, Callable
 
 from langchain_core.output_parsers import StrOutputParser
@@ -11,13 +12,15 @@ from langchain_core.runnables import RunnableBranch, RunnableLambda, RunnablePas
 from langchain_openai import ChatOpenAI
 
 from orchestration.state import WorkflowState
+from services import PROJECT_ROOT
+from services.fulltext_vector_store import FullTextStoreError
 
 
 RAG_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "당신은 논문 요약 근거만 사용하는 RAG 답변자입니다. "
+            "당신은 추출된 논문 본문 근거만 사용하는 RAG 답변자입니다. "
             "제공된 근거 밖의 사실을 만들지 마세요. 각 핵심 주장 뒤에 [S1] 형식으로 "
             "출처 번호를 표시하세요. 근거가 부족하면 부족하다고 명확히 답하세요.",
         ),
@@ -27,9 +30,9 @@ RAG_PROMPT = ChatPromptTemplate.from_messages(
 
 
 def _default_store():
-    from services.summary_vector_store import ChromaSummaryStore
+    from services.fulltext_vector_store import ChromaFullTextStore
 
-    return ChromaSummaryStore()
+    return ChromaFullTextStore()
 
 
 def _default_llm():
@@ -58,7 +61,7 @@ class SummaryRAGChain:
         no_evidence = RunnableLambda(
             lambda payload: {
                 **payload,
-                "answer": "저장된 논문 요약에서 질문에 답할 근거를 찾지 못했습니다.",
+                "answer": "저장된 논문 본문에서 질문에 답할 근거를 찾지 못했습니다.",
             }
         )
         self.chain = RunnableLambda(self._retrieve) | RunnableBranch(
@@ -101,8 +104,59 @@ class SummaryRAGChain:
         }
 
     def invoke(self, question: str, *, paper_id: str | None = None) -> dict[str, Any]:
-        result = self.chain.invoke({"question": question, "paper_id": paper_id})
-        return {"answer": result["answer"], "sources": result["sources"]}
+        try:
+            result = self.chain.invoke({"question": question, "paper_id": paper_id})
+        except FullTextStoreError:
+            # 본문 DB·색인 모델이 준비되지 않았을 때도 환각 답변 대신 안내한다.
+            result = {"sources": [], "answer": ""}
+        if not result["sources"]:
+            reference_hint = self._reference_hint(paper_id)
+            return {
+                "answer": (
+                    "해당 논문의 본문 데이터가 없어 질문에 답할 수 없습니다. "
+                    f"{reference_hint}"
+                ),
+                "sources": [],
+            }
+        return {
+            "answer": self._append_original_evidence(result["answer"], result["sources"]),
+            "sources": result["sources"],
+        }
+
+    @staticmethod
+    def _append_original_evidence(answer: str, sources: list[dict[str, Any]]) -> str:
+        """답변에 사용자가 검증할 수 있는 원문 발췌를 함께 표시한다."""
+        evidence_lines = ["\n\n### 원문 근거\n"]
+        for source in sources:
+            label = str(source.get("label") or "S?")
+            title = str(source.get("title") or "제목 없음")
+            section = str(source.get("section") or "본문")
+            excerpt = str(source.get("excerpt") or "").strip().replace("\n", " ")
+            evidence_lines.extend(
+                [
+                    f"- [{label}] {title} · {section}",
+                    f"  > {excerpt}",
+                ]
+            )
+        return str(answer).rstrip() + "\n".join(evidence_lines)
+
+    @staticmethod
+    def _reference_hint(paper_id: str | None) -> str:
+        if not paper_id:
+            return "답변하려는 논문을 선택한 뒤 참고문헌을 확인해 주세요."
+        ref_db = PROJECT_ROOT / "data" / "paper_extract" / "extracted_papers_ref.db"
+        if not ref_db.exists():
+            return "해당 논문의 참고문헌을 원문에서 확인해 주세요."
+        try:
+            with sqlite3.connect(ref_db) as connection:
+                count = connection.execute(
+                    "SELECT COUNT(*) FROM extracted_ref WHERE paper_id = ?", (paper_id,)
+                ).fetchone()[0]
+        except sqlite3.Error:
+            count = 0
+        if count:
+            return f"저장된 참고문헌 {count}건을 참조해 주세요."
+        return "해당 논문의 참고문헌을 원문에서 확인해 주세요."
 
 
 class RAGNode:
@@ -123,13 +177,22 @@ class RAGNode:
 
     def __call__(self, state: WorkflowState) -> dict[str, Any]:
         paper_ids = state.get("paper_ids", [])
+        if len(paper_ids) != 1:
+            return {
+                "rag_answer": "질문할 논문을 한 편만 선택해 주세요.",
+                "response": "질문할 논문을 한 편만 선택해 주세요.",
+                "sources": [],
+                "rag_selection_required": True,
+                "node_history": ["rag"],
+            }
         result = self.chain.invoke(
             state["query"],
-            paper_id=paper_ids[0] if len(paper_ids) == 1 else None,
+            paper_id=paper_ids[0],
         )
         return {
             "rag_answer": result["answer"],
             "response": result["answer"],
             "sources": result["sources"],
+            "rag_selection_required": False,
             "node_history": ["rag"],
         }

@@ -1,17 +1,18 @@
 # src/tools/deep_search_tool.py
 import json
 import sqlite3
-from pathlib import Path
 from typing import Dict, Any, List
+
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 from langchain_openai import OpenAIEmbeddings
 
+from tools import PROJECT_DIR
+
 # ==========================================
 # 1. 동적 경로 매핑
 # ==========================================
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-BASE_DIR = PROJECT_ROOT / "data" / "paper_extract"
+BASE_DIR = PROJECT_DIR / "data" / "paper_extract"
 JSON_LIST_PATH = BASE_DIR / "extracted_papers.json"
 DB_PATH = BASE_DIR / "extracted_papers.db"
 REF_DB_PATH = BASE_DIR / "extracted_papers_ref.db"
@@ -30,6 +31,12 @@ class SearchPaperListInput(BaseModel):
 
 class GetPaperDetailsInput(BaseModel):
     paper_id: str = Field(..., description="상세 내용을 조회할 논문의 고유 ID")
+
+
+class SearchPaperPassagesInput(BaseModel):
+    question: str = Field(..., min_length=1, description="논문 본문에서 근거를 찾을 질문")
+    paper_id: str | None = Field(default=None, description="검색 범위를 제한할 논문 ID")
+    limit: int = Field(default=5, ge=1, le=10, description="반환할 근거 청크 수")
 
 
 def _load_json_with_cache() -> Dict[str, Any]:
@@ -127,3 +134,19 @@ def get_local_paper_details(paper_id: str) -> str:
         details["references"] = ["레퍼런스 DB 누락됨"]
 
     return json.dumps(details, ensure_ascii=False)
+
+
+@tool("search_local_paper_passages", args_schema=SearchPaperPassagesInput)
+def search_local_paper_passages(
+    question: str, paper_id: str | None = None, limit: int = 5
+) -> str:
+    """추출 논문 본문을 섹션별 청크로 검색해 답변 근거를 반환합니다."""
+    try:
+        from services.fulltext_vector_store import ChromaFullTextStore
+
+        results = ChromaFullTextStore().search(
+            question, paper_id=paper_id, limit=limit
+        )
+        return json.dumps({"question": question, "results": results}, ensure_ascii=False)
+    except Exception as exc:
+        return json.dumps({"error": f"논문 본문 검색 실패: {exc}"}, ensure_ascii=False)

@@ -51,6 +51,7 @@ class WorkflowState(TypedDict, total=False):
     summaries: list[dict[str, Any]]
 
     rag_answer: str
+    rag_selection_required: bool
     sources: list[dict[str, Any]]
     deep_research_status: str
     deep_research_answer: str

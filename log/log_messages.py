@@ -296,4 +296,54 @@ LOG_MESSAGES: dict[LogCode, dict[str, str]] = {
         "event": "summary_storage_failed",
         "message": "논문 요약을 Vector DB에 저장하지 못했습니다.",
     },
+    LogCode.DEEP_RESEARCH_LIST_STARTED: {
+        "level": "INFO",
+        "event": "deep_research_list_started",
+        "message": "Deep Research 대상 논문 목록을 조회합니다.",
+    },
+    LogCode.DEEP_RESEARCH_ANSWER_STARTED: {
+        "level": "INFO",
+        "event": "deep_research_answer_started",
+        "message": "선택한 논문을 근거로 Deep Research 답변을 생성합니다.",
+    },
+    LogCode.DEEP_RESEARCH_RELATED_SEARCH_STARTED: {
+        "level": "INFO",
+        "event": "deep_research_related_search_started",
+        "message": "선택한 논문의 참고문헌 기반 관련 논문 검색을 시작합니다.",
+    },
+    LogCode.DEEP_RESEARCH_LIST_SUCCEEDED: {
+        "level": "INFO",
+        "event": "deep_research_list_succeeded",
+        "message": "Deep Research 대상 논문 목록을 불러왔습니다.",
+    },
+    LogCode.DEEP_RESEARCH_PAPER_SELECTED: {
+        "level": "INFO",
+        "event": "deep_research_paper_selected",
+        "message": "Deep Research 대상 논문을 선택했습니다.",
+    },
+    LogCode.DEEP_RESEARCH_ANSWER_SUCCEEDED: {
+        "level": "INFO",
+        "event": "deep_research_answer_succeeded",
+        "message": "선택한 논문을 근거로 Deep Research 답변을 생성했습니다.",
+    },
+    LogCode.DEEP_RESEARCH_RELATED_SEARCH_SUCCEEDED: {
+        "level": "INFO",
+        "event": "deep_research_related_search_succeeded",
+        "message": "참고문헌 기반 관련 논문 검색을 완료했습니다.",
+    },
+    LogCode.DEEP_RESEARCH_REQUEST_REJECTED: {
+        "level": "WARNING",
+        "event": "deep_research_request_rejected",
+        "message": "Deep Research 요청을 처리할 수 없어 사용자 입력을 다시 요청합니다.",
+    },
+    LogCode.DEEP_RESEARCH_ANSWER_FAILED: {
+        "level": "ERROR",
+        "event": "deep_research_answer_failed",
+        "message": "Deep Research 답변 생성에 실패했습니다.",
+    },
+    LogCode.DEEP_RESEARCH_RELATED_SEARCH_FAILED: {
+        "level": "ERROR",
+        "event": "deep_research_related_search_failed",
+        "message": "참고문헌 기반 관련 논문 검색에 실패했습니다.",
+    },
 }
