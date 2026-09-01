@@ -175,30 +175,79 @@ def build_graph(
                 "errors": ["키워드를 바꿔 재검색했지만 논문을 찾지 못했습니다."],
             }
 
-        # RAG가 출처를 못 찾거나 스스로 근거 부족을 알리면 Deep Research로 전환한다.
-        rag_answer = str(state.get("rag_answer") or state.get("response") or "").casefold()
-        insufficient_markers = (
-            "근거가 부족",
-            "근거를 찾지 못",
-            "확인할 수 없",
-            "답할 수 없",
-            "insufficient evidence",
-            "cannot answer",
-        )
-        rag_insufficient = not state.get("sources") or any(
-            marker in rag_answer for marker in insufficient_markers
-        )
-        if last_node == "rag" and rag_insufficient:
-            if "deep_research" not in history:
+        research_steps: list[Route] = [
+            "keyword",
+            "search",
+            "download",
+            "extract",
+            "translate",
+            "summarize",
+            "rag",
+        ]
+        # RAG가 문서를 찾으면 해당 문서를 Deep Research에 넘긴다. 문서가 없으면
+        # Supervisor가 검색·추출·번역·요약을 거쳐 RAG를 다시 실행한다.
+        if last_node == "rag":
+            if state.get("sources"):
                 return {
                     "route": "deep_research",
-                    "route_reason": "RAG 근거가 없어 Deep Research로 전환",
+                    "route_reason": "RAG 관련 문서를 Deep Research에 전달",
                     "remaining_steps": remaining,
+                }
+
+            attempts = int(retry_counts.get("rag_rebuild", 0))
+            if attempts < max_retries:
+                retry_counts["rag_rebuild"] = attempts + 1
+                steps = (
+                    ["extract", "translate", "summarize", "rag"]
+                    if state.get("paper_ids")
+                    else research_steps
+                )
+                route = steps.pop(0)
+                return {
+                    "route": route,
+                    "route_reason": "RAG 관련 문서가 없어 논문을 재처리",
+                    "remaining_steps": steps,
+                    "retry_counts": retry_counts,
                 }
             return {
                 "route": "finish",
-                "route_reason": "RAG와 Deep Research 모두 완료",
+                "route_reason": "논문 재처리 후에도 RAG 문서 없음",
                 "remaining_steps": [],
+                "retry_counts": retry_counts,
+                "errors": ["논문을 다시 처리했지만 질문과 관련된 문서를 찾지 못했습니다."],
+            }
+
+        # Deep Research가 전달된 문서를 충분히 설명하지 못하면 Supervisor가
+        # 추가 논문을 검색하고 전체 처리 흐름을 다시 수행한다.
+        if last_node == "deep_research":
+            deep_sufficient = (
+                state.get("deep_research_status") == "success"
+                and bool(state.get("deep_research_sources"))
+            )
+            if deep_sufficient:
+                return {
+                    "route": "finish",
+                    "route_reason": "Deep Research 설명 완료",
+                    "remaining_steps": [],
+                }
+
+            attempts = int(retry_counts.get("deep_research", 0))
+            if attempts < max_retries:
+                retry_counts["deep_research"] = attempts + 1
+                steps = list(research_steps)
+                route = steps.pop(0)
+                return {
+                    "route": route,
+                    "route_reason": "Deep Research 설명이 부족하여 추가 논문 검색",
+                    "remaining_steps": steps,
+                    "retry_counts": retry_counts,
+                }
+            return {
+                "route": "finish",
+                "route_reason": "추가 검색 후에도 Deep Research 설명 부족",
+                "remaining_steps": [],
+                "retry_counts": retry_counts,
+                "errors": ["추가 논문을 검색했지만 충분한 설명 근거를 찾지 못했습니다."],
             }
 
         if remaining:

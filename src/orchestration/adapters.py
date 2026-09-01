@@ -280,19 +280,54 @@ class DeepResearchNode:
         return self._agent
 
     def __call__(self, state: WorkflowState) -> dict[str, Any]:
-        # DeepResearchBot 은 대화 상태를 자기 안에 들고 있어서 thread_id 를 받지 않는다.
-        # 돌려주는 것도 문자열이 아니라 {"status", "message", ...} 이다.
-        result = self.agent.handle_message(state["query"])
+        rag_sources = [
+            source
+            for source in state.get("sources", [])
+            if isinstance(source, dict)
+        ]
+        if not rag_sources:
+            raise NodeExecutionError("Deep Research에 전달할 RAG 문서가 없습니다.")
 
-        # 질문에 답한 경우 message 는 "선택한 논문을 근거로 답변했습니다" 같은 상태 문구고,
-        # 사용자에게 보여야 할 본문은 answer 에 들어 있다. 목록·선택처럼 본문이 없는
-        # 응답에서는 message 가 그대로 보여 줄 내용이다.
+        selected: dict[str, Any] | None = None
+        selected_source: dict[str, Any] | None = None
+        for source in rag_sources:
+            candidates = (source.get("paper_id"), source.get("title"))
+            for candidate in candidates:
+                selection = str(candidate or "").strip()
+                if not selection:
+                    continue
+                result = self.agent.select_paper(selection)
+                if result.get("status") == "selected":
+                    selected = result
+                    selected_source = source
+                    break
+            if selected is not None:
+                break
+
+        if selected is None:
+            result = {
+                "status": "selection_required",
+                "message": "RAG가 찾은 문서를 Deep Research 대상 논문으로 선택하지 못했습니다.",
+                "sources": [],
+            }
+        else:
+            result = self.agent.ask(state["query"])
+
         response = str(result.get("answer") or result.get("message") or "")
+        deep_sources = list(result.get("sources") or [])
+        paper = result.get("paper") or selected.get("paper") if selected else {}
+        paper_id = str(
+            (paper or {}).get("id")
+            or (selected_source or {}).get("paper_id")
+            or ""
+        )
 
         payload: dict[str, Any] = {
             "response": response,
+            "deep_research_status": str(result.get("status") or "unknown"),
+            "deep_research_answer": response,
+            "deep_research_sources": deep_sources,
+            "deep_research_paper_id": paper_id,
             "node_history": ["deep_research"],
         }
-        if result.get("sources"):
-            payload["sources"] = result["sources"]
         return payload

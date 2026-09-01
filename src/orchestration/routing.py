@@ -43,7 +43,7 @@ Nodes:
 - translate: translate extracted Markdown; required before summarize
 - summarize: summarize translated Markdown and store it in ChromaDB
 - rag: answer a question using only summaries already stored in ChromaDB
-- deep_research: perform multi-step analysis over the local paper tools
+- deep_research: deeply analyze the paper selected by RAG; use only after rag
 
 Rules:
 1. For a new external search use [keyword, search].
@@ -52,6 +52,8 @@ Rules:
 4. RAG is QA only; never use RAG as a translation step.
 5. Do not invent a download step if no selected/search-result papers exist.
 6. Prefer library for list/search requests about locally saved papers.
+7. For deep analysis or comparison, start with [rag]. The supervisor will send
+   a retrieved paper to deep_research only after RAG finds a source.
 """
 
 
@@ -102,19 +104,19 @@ class SupervisorRouter:
         if any(term in query for term in ("다운로드", "download")):
             steps = ["download"] if state.get("selected_papers") else ["library", "download"]
             return SupervisorDecision(steps=steps, reason="논문 다운로드 요청")
+        if any(term in query for term in ("딥리서치", "심층", "비교", "분석", "deep research")):
+            return SupervisorDecision(steps=["rag"], reason="저장 문서 검색 후 심층 분석")
         if any(term in query for term in ("서재", "저장된", "목록", "리스트", "library")):
             return SupervisorDecision(steps=["library"], reason="로컬 서재 요청")
         if any(term in query for term in ("rag", "근거", "출처", "질문", "설명해")):
             return SupervisorDecision(steps=["rag"], reason="저장된 요약 기반 질의응답")
-        if any(term in query for term in ("딥리서치", "심층", "비교", "분석", "deep research")):
-            return SupervisorDecision(steps=["deep_research"], reason="복합 연구 분석 요청")
         return None
 
     @classmethod
     def _fallback(cls, state: WorkflowState) -> SupervisorDecision:
         return cls._rule_decision(state) or SupervisorDecision(
-            steps=["deep_research"],
-            reason="분류되지 않은 복합 요청",
+            steps=["rag"],
+            reason="저장 문서 검색 후 질의응답",
         )
 
     def decide(self, state: WorkflowState) -> SupervisorDecision:
