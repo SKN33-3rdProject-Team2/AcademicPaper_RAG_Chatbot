@@ -4,7 +4,7 @@
 ---------
 프로젝트 최상위 폴더에서 아래 명령어를 실행한다.
 
-    pip install -r requirements-orchestration.txt
+    pip install -r requirements.txt
     streamlit run web_app.py
 
 실제 화면은 ``apps`` 폴더에 기능별로 모듈화되어 있다. 이 파일은 실행 설정,
