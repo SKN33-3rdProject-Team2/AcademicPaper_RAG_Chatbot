@@ -79,12 +79,16 @@ def _default_summarizer():
     return SummaryTool()
 
 
-def _default_deep_research_agent():
-    from feature.deep_research import DeepResearchBot
+def _default_deep_search():
+    from tools.deep_search_tool import DeepSearch
 
-    # with_openai 가 저장소·검색기·답변기를 한꺼번에 엮어 준다. 생성자를 직접 부르면
-    # repository 를 인자로 받아야 해서, 기본값으로 쓰기에는 이쪽이 맞다.
-    return DeepResearchBot.with_openai()
+    return DeepSearch()
+
+
+def _default_deep_research_answerer():
+    from feature.deep_research import LangChainPaperAnswerer
+
+    return LangChainPaperAnswerer.with_openai()
 
 
 class KeywordNode:
@@ -155,7 +159,12 @@ class ArxivSearchNode:
                 self.bot.save_papers(papers)
             except Exception:
                 pass
-        return {"search_results": papers, "node_history": ["search"]}
+        return {
+            "search_results": papers,
+            "selection_candidates": [_record(paper) for paper in papers],
+            "selection_source": "search",
+            "node_history": ["search"],
+        }
 
 
 class LocalLibraryNode:
@@ -177,6 +186,8 @@ class LocalLibraryNode:
         return {
             "paper_ids": [str(paper["id"]) for paper in papers],
             "library_results": papers,
+            "selection_candidates": [_record(paper) for paper in papers],
+            "selection_source": "library",
             "node_history": ["library"],
         }
 
@@ -193,12 +204,20 @@ class DownloadNode:
         return self._bot
 
     def __call__(self, state: WorkflowState) -> dict[str, Any]:
-        papers = (
-            state.get("selected_papers")
-            or state.get("library_results")
-            or state.get("search_results")
-            or []
-        )
+        download_paper_ids = [
+            str(paper_id).strip()
+            for paper_id in state.get("download_paper_ids", [])
+            if str(paper_id).strip()
+        ]
+        if download_paper_ids:
+            papers = self.bot.fetch_full_data_from_db(download_paper_ids)
+        else:
+            papers = (
+                state.get("selected_papers")
+                or state.get("library_results")
+                or state.get("search_results")
+                or []
+            )
         if not papers:
             raise NodeExecutionError("다운로드할 논문이 선택되지 않았습니다.")
         paths: list[str] = []
@@ -213,8 +232,19 @@ class DownloadNode:
                 paths.append(f"{paper.get('title', paper.get('id', ''))}: {status}")
                 if paper.get("id"):
                     paper_ids.append(str(paper["id"]))
+        deep_search_paper_id = str(
+            state.get("deep_search_paper_id") or ""
+        ).strip()
+        selected_paper_ids = [
+            str(paper_id).strip()
+            for paper_id in state.get("paper_ids", [])
+            if str(paper_id).strip()
+        ]
         return {
-            "paper_ids": paper_ids or list(state.get("paper_ids", [])),
+            "paper_ids": (
+                selected_paper_ids
+                or ([deep_search_paper_id] if deep_search_paper_id else paper_ids)
+            ),
             "downloaded_paths": paths,
             "node_history": ["download"],
         }
@@ -333,152 +363,350 @@ class SummaryNode:
         return {"summaries": summaries, "node_history": ["summarize"]}
 
 
-class DeepResearchNode:
-    def __init__(self, factory: Callable[[], Any] = _default_deep_research_agent) -> None:
+class DeepSearchNode:
+    """선택된 논문 한 편에서 질문 관련 본문 근거를 검색한다."""
+
+    def __init__(
+        self,
+        factory: Callable[[], Any] = _default_deep_search,
+        *,
+        limit: int = 5,
+    ) -> None:
+        if not 1 <= limit <= 10:
+            raise ValueError("Deep Search 근거 수는 1개에서 10개 사이여야 합니다.")
         self._factory = factory
-        self._agent: Any | None = None
+        self._searcher: Any | None = None
+        self._limit = limit
 
     @property
-    def agent(self):
-        if self._agent is None:
-            self._agent = self._factory()
-        return self._agent
+    def searcher(self):
+        if self._searcher is None:
+            self._searcher = self._factory()
+        return self._searcher
+
+    @staticmethod
+    def _select_candidate(
+        query: str, candidates: list[dict[str, Any]]
+    ) -> dict[str, Any] | None:
+        number_match = re.search(r"(\d+)\s*번", query)
+        if number_match:
+            index = int(number_match.group(1)) - 1
+            return candidates[index] if 0 <= index < len(candidates) else None
+
+        normalized_query = query.casefold()
+        matches = [
+            candidate
+            for candidate in candidates
+            if any(
+                value and value.casefold() in normalized_query
+                for value in (
+                    str(candidate.get("paper_id") or "").strip(),
+                    str(candidate.get("title") or "").strip(),
+                )
+            )
+        ]
+        return (
+            max(matches, key=lambda item: len(str(item.get("title") or "")))
+            if matches
+            else None
+        )
+
+    @staticmethod
+    def _selection_payload(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+        lines = [
+            f"{index}. {paper.get('title') or paper.get('paper_id')}"
+            for index, paper in enumerate(candidates, start=1)
+        ]
+        response = (
+            "\n".join(
+                [
+                    "심층 질문이 가능한 추출 논문 목록입니다.",
+                    *lines,
+                    "번호나 제목으로 논문 한 편을 선택해 주세요.",
+                ]
+            )
+            if candidates
+            else "PaperExtractor로 추출된 논문이 없습니다."
+        )
+        return {
+            "paper_ids": [],
+            "sources": [],
+            "deep_search_references": [],
+            "deep_search_candidates": candidates,
+            "selection_candidates": candidates,
+            "selection_source": "deep_search",
+            "deep_search_selection_required": bool(candidates),
+            "response": response,
+            "node_history": ["deep_search"],
+        }
 
     def __call__(self, state: WorkflowState) -> dict[str, Any]:
-        if state.get("rag_selection_required"):
-            result = self.agent.list_papers()
-            papers = [
-                paper
-                for paper in result.get("papers", [])
-                if isinstance(paper, dict)
-            ]
+        requested_paper_id = str(
+            state.get("deep_search_paper_id") or ""
+        ).strip()
+        paper_ids = list(
+            dict.fromkeys(
+                str(paper_id).strip()
+                for paper_id in state.get("paper_ids", [])
+                if str(paper_id).strip()
+            )
+        )
+        if requested_paper_id:
+            paper_ids = [requested_paper_id]
+        active_paper_id = str(state.get("deep_research_paper_id") or "").strip()
+        candidates = [
+            dict(candidate)
+            for candidate in state.get("deep_search_candidates", [])
+            if isinstance(candidate, dict)
+        ]
+        if candidates and not requested_paper_id:
+            selected = self._select_candidate(state["query"], candidates)
+            if selected is not None:
+                selected_id = str(selected.get("paper_id") or "").strip()
+                if selected_id:
+                    paper_ids = [selected_id]
+
+        if len(paper_ids) != 1:
+            catalog = self.searcher.search_papers("")
+            allowed_ids = set(paper_ids)
             candidates = [
                 {
                     "paper_id": str(paper.get("id") or ""),
                     "title": str(paper.get("title") or ""),
                 }
-                for paper in papers
-                if str(paper.get("id") or "").strip()
+                for paper in catalog.get("results", [])
+                if isinstance(paper, dict)
+                and str(paper.get("id") or "").strip()
+                and (
+                    not allowed_ids
+                    or str(paper.get("id") or "").strip() in allowed_ids
+                )
             ]
-            if candidates:
-                lines = [
-                    f"{index}. {paper['title'] or paper['paper_id']}"
-                    for index, paper in enumerate(candidates, 1)
-                ]
-                response = "\n".join(
-                    [
-                        "설명 가능한 분석 논문 목록입니다.",
-                        *lines,
-                        "번호나 제목을 선택해 설명을 요청해 주세요.",
-                    ]
-                )
-                status = "selection_required"
-            else:
-                response = str(
-                    result.get("message")
-                    or "data/paper_extract에 분석 가능한 논문이 없습니다."
-                )
-                status = "empty"
+            selected = self._select_candidate(state["query"], candidates)
+            selected_id = str((selected or {}).get("paper_id") or "").strip()
+            if not selected_id and active_paper_id and any(
+                candidate.get("paper_id") == active_paper_id
+                for candidate in candidates
+            ):
+                selected_id = active_paper_id
+            if not selected_id:
+                return self._selection_payload(candidates)
+            paper_ids = [selected_id]
+
+        paper_id = paper_ids[0]
+        # PaperExtractor가 extracted_papers.db에 저장한 동일 ID가 실제로
+        # 존재하는지 먼저 확인한다. 제목 검색이나 다른 논문 후보로 대체하지 않는다.
+        try:
+            paper = self.searcher.get_paper_details(paper_id)
+        except Exception as exc:
+            return {
+                "paper_ids": [],
+                "sources": [],
+                "deep_search_references": [],
+                "deep_search_candidates": [],
+                "deep_search_selection_required": False,
+                "response": f"선택한 논문의 추출 본문을 찾지 못했습니다: {exc}",
+                "node_history": ["deep_search"],
+            }
+        if str(paper.get("paper_id") or "").strip() != paper_id:
+            raise NodeExecutionError(
+                "선택한 논문 ID와 추출 DB의 논문 ID가 일치하지 않습니다."
+            )
+
+        references = [
+            str(reference).strip()
+            for reference in paper.get("references", [])
+            if str(reference).strip()
+            and str(reference).strip()
+            not in {"레퍼런스 DB 누락됨", "레퍼런스 DB 파싱 오류 발생"}
+        ]
+
+        try:
+            payload = self.searcher.search_passages(
+                state["query"],
+                paper_id=paper_id,
+                limit=self._limit,
+            )
+        except Exception as exc:
+            return {
+                "paper_ids": [],
+                "sources": [],
+                "deep_search_references": [],
+                "deep_search_candidates": [],
+                "deep_search_selection_required": False,
+                "response": f"선택한 논문의 본문 근거 검색에 실패했습니다: {exc}",
+                "node_history": ["deep_search"],
+            }
+        raw_results = payload.get("results", [])
+        if not isinstance(raw_results, list):
+            raise NodeExecutionError("Deep Search 결과 형식이 올바르지 않습니다.")
+
+        sources: list[dict[str, Any]] = []
+        for index, result in enumerate(raw_results, start=1):
+            if not isinstance(result, dict):
+                continue
+            metadata = result.get("metadata")
+            metadata = dict(metadata) if isinstance(metadata, dict) else {}
+            document = str(result.get("document") or "")
+            sources.append(
+                {
+                    "label": f"S{index}",
+                    "id": str(result.get("id") or ""),
+                    "paper_id": str(metadata.get("paper_id") or paper_id),
+                    "title": str(metadata.get("title") or paper.get("title") or ""),
+                    "section": str(metadata.get("section") or ""),
+                    "distance": result.get("distance"),
+                    "document": document,
+                    "excerpt": document[:500],
+                }
+            )
+
+        response = (
+            f"선택한 논문에서 질문과 관련된 근거 {len(sources)}개를 찾았습니다."
+            if sources
+            else "선택한 논문에서 질문과 관련된 본문 근거를 찾지 못했습니다."
+        )
+        return {
+            "paper_ids": [paper_id],
+            "sources": sources,
+            "deep_search_references": references,
+            "deep_search_candidates": [],
+            "deep_search_selection_required": False,
+            "response": response,
+            "node_history": ["deep_search"],
+        }
+
+
+class DeepResearchNode:
+    """Deep Search가 찾은 단일 논문의 근거만 사용해 답변한다."""
+
+    def __init__(
+        self,
+        factory: Callable[[], Any] = _default_deep_research_answerer,
+    ) -> None:
+        self._factory = factory
+        self._answerer: Any | None = None
+
+    @property
+    def answerer(self):
+        if self._answerer is None:
+            self._answerer = self._factory()
+        return self._answerer
+
+    @staticmethod
+    def _insufficient_evidence_response(references: list[str]) -> str:
+        message = "선택한 논문에서 질문에 답할 직접적인 본문 근거를 찾지 못했습니다."
+        if not references:
+            return message + " 이 논문에 저장된 참고문헌도 없습니다."
+        return "\n".join(
+            [
+                message,
+                "대신 이 논문이 근거로 사용한 참고문헌을 안내합니다.",
+                *references,
+            ]
+        )
+
+    @staticmethod
+    def _with_download_summary(state: WorkflowState, response: str) -> str:
+        if "download" not in state.get("node_history", []):
+            return response
+        paths = [str(path) for path in state.get("downloaded_paths", []) if path]
+        if not paths:
+            return response
+        return "\n".join(
+            ["다운로드 결과:", *(f"- {path}" for path in paths), "", response]
+        )
+
+    def __call__(self, state: WorkflowState) -> dict[str, Any]:
+        paper_ids = [
+            str(paper_id).strip()
+            for paper_id in state.get("paper_ids", [])
+            if str(paper_id).strip()
+        ]
+        if len(set(paper_ids)) != 1:
+            raise NodeExecutionError(
+                "Deep Research를 실행하려면 논문을 정확히 한 편 선택해야 합니다."
+            )
+        paper_id = paper_ids[0]
+        references = [
+            str(reference).strip()
+            for reference in state.get("deep_search_references", [])
+            if str(reference).strip()
+        ]
+
+        sources = [
+            dict(source)
+            for source in state.get("sources", [])
+            if isinstance(source, dict)
+            and str(source.get("paper_id") or "").strip() == paper_id
+            and str(source.get("document") or source.get("excerpt") or "").strip()
+        ]
+        if not sources:
+            response = self._with_download_summary(
+                state,
+                self._insufficient_evidence_response(references),
+            )
             return {
                 "response": response,
-                "rag_candidates": candidates,
-                "rag_selection_required": False,
-                "deep_research_status": status,
-                "deep_research_local_only": True,
+                "deep_research_status": "insufficient_evidence",
+                "deep_research_answer": response,
+                "deep_research_sources": [],
+                "deep_research_paper_id": paper_id,
                 "node_history": ["deep_research"],
             }
 
-        candidate_sources: list[dict[str, Any]] = []
-
-        # An explicitly supplied paper can go straight from the supervisor to
-        # Deep Research. RAG sources remain the fallback when the user has not
-        # selected a paper yet.
-        for paper_id in state.get("paper_ids", []):
-            normalized = str(paper_id or "").strip()
-            if normalized:
-                candidate_sources.append({"paper_id": normalized})
-
-        active_paper_id = str(state.get("deep_research_paper_id") or "").strip()
-        if active_paper_id:
-            candidate_sources.append({"paper_id": active_paper_id})
-
-        rag_candidates = [
-            source
-            for source in state.get("rag_candidates", [])
-            if isinstance(source, dict)
-        ]
-        number_match = re.search(r"(\d+)\s*번", state["query"])
-        if number_match:
-            selected_index = int(number_match.group(1)) - 1
-            if 0 <= selected_index < len(rag_candidates):
-                candidate_sources.append(rag_candidates[selected_index])
-        else:
-            normalized_query = state["query"].casefold()
-            title_matches = [
-                source
-                for source in rag_candidates
-                if str(source.get("title") or "").strip().casefold()
-                in normalized_query
-            ]
-            if title_matches:
-                candidate_sources.append(
-                    max(title_matches, key=lambda source: len(str(source.get("title") or "")))
-                )
-
-        candidate_sources.extend(
-            paper
-            for paper in state.get("selected_papers", [])
-            if isinstance(paper, dict)
+        title = next(
+            (
+                str(source.get("title") or "").strip()
+                for source in sources
+                if str(source.get("title") or "").strip()
+            ),
+            paper_id,
         )
-        candidate_sources.extend(
-            source
-            for source in state.get("sources", [])
-            if isinstance(source, dict)
+        evidence = "\n\n".join(
+            str(source.get("document") or source.get("excerpt") or "").strip()
+            for source in sources
         )
-        if not candidate_sources:
-            raise NodeExecutionError("Deep Research에 전달할 대상 논문이 없습니다.")
+        paper = {
+            "id": paper_id,
+            "title": title,
+            "translation_text": evidence,
+            "structured_summary": "",
+        }
+        raw_result = self.answerer.answer(paper, state["query"])
+        result = (
+            raw_result
+            if isinstance(raw_result, dict)
+            else {"answer": str(raw_result)}
+        )
+        response = str(result.get("answer") or "").strip()
+        if not response:
+            raise NodeExecutionError("Deep Research 답변을 생성하지 못했습니다.")
 
-        selected: dict[str, Any] | None = None
-        selected_source: dict[str, Any] | None = None
-        for source in candidate_sources:
-            candidates = (source.get("paper_id"), source.get("title"))
-            for candidate in candidates:
-                selection = str(candidate or "").strip()
-                if not selection:
-                    continue
-                result = self.agent.select_paper(selection)
-                if result.get("status") == "selected":
-                    selected = result
-                    selected_source = source
-                    break
-            if selected is not None:
-                break
-
-        if selected is None:
-            result = {
-                "status": "selection_required",
-                "message": "RAG가 찾은 문서를 Deep Research 대상 논문으로 선택하지 못했습니다.",
-                "sources": [],
+        answer_sources = result.get("sources")
+        if result.get("has_evidence") is False or (
+            isinstance(answer_sources, list) and not answer_sources
+        ):
+            response = self._with_download_summary(
+                state,
+                self._insufficient_evidence_response(references),
+            )
+            return {
+                "response": response,
+                "deep_research_status": "insufficient_evidence",
+                "deep_research_answer": response,
+                "deep_research_sources": [],
+                "deep_research_paper_id": paper_id,
+                "node_history": ["deep_research"],
             }
-        else:
-            result = self.agent.ask(state["query"])
 
-        response = str(result.get("answer") or result.get("message") or "")
-        deep_sources = list(result.get("sources") or [])
-        paper = result.get("paper") or selected.get("paper") if selected else {}
-        paper_id = str(
-            (paper or {}).get("id")
-            or (selected_source or {}).get("paper_id")
-            or ""
-        )
+        response = self._with_download_summary(state, response)
 
-        payload: dict[str, Any] = {
+        return {
             "response": response,
-            "deep_research_status": str(result.get("status") or "unknown"),
+            "deep_research_status": "success",
             "deep_research_answer": response,
-            "deep_research_sources": deep_sources,
+            "deep_research_sources": sources,
             "deep_research_paper_id": paper_id,
-            "deep_research_local_only": bool(state.get("deep_research_local_only")),
             "node_history": ["deep_research"],
         }
-        return payload

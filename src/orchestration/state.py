@@ -36,7 +36,7 @@ Route = Literal[
     "extract",
     "translate",
     "summarize",
-    "rag",
+    "deep_search",
     "deep_research",
     "finish",
 ]
@@ -61,23 +61,26 @@ class WorkflowState(TypedDict, total=False):
 
     keywords: list[str]
     paper_ids: list[str]
+    download_paper_ids: list[str]
+    deep_search_paper_id: str
     selected_papers: list[dict[str, Any]]
     search_results: list[dict[str, Any]]
     library_results: list[dict[str, Any]]
+    selection_candidates: list[dict[str, Any]]
+    selection_source: str
     downloaded_paths: list[str]
     extracted_records: list[dict[str, Any]]
     translated_paths: list[str]
     summaries: list[dict[str, Any]]
 
-    rag_answer: str
     sources: list[dict[str, Any]]
-    rag_candidates: list[dict[str, Any]]
-    rag_selection_required: bool
+    deep_search_references: list[str]
+    deep_search_candidates: list[dict[str, Any]]
+    deep_search_selection_required: bool
     deep_research_status: str
     deep_research_answer: str
     deep_research_sources: list[Any]
     deep_research_paper_id: str
-    deep_research_local_only: bool
     response: str
 
     node_history: Annotated[list[str], _accumulate]
@@ -102,6 +105,8 @@ def initial_state(
         "query": normalized,
         "thread_id": thread_id,
         "paper_ids": list(paper_ids or []),
+        "download_paper_ids": [],
+        "deep_search_paper_id": "",
         "remaining_steps": [],
         "retry_counts": {},
         "max_retries": max(0, max_retries),
@@ -110,14 +115,12 @@ def initial_state(
         "errors": [_RESET],
         # Per-turn outputs: these are plain (non-reducer) fields, so a prior
         # turn's value would otherwise sit in the checkpoint untouched and
-        # leak into a turn whose plan never sets them (e.g. a "library"-only
-        # turn re-showing a previous turn's RAG answer/sources).
+        # leak into a turn whose plan never sets it.
         "response": "",
         "sources": [],
-        "rag_selection_required": False,
-        "rag_answer": "",
+        "deep_search_references": [],
+        "deep_search_selection_required": False,
         "deep_research_status": "",
         "deep_research_answer": "",
         "deep_research_sources": [],
-        "deep_research_paper_id": "",
     }
