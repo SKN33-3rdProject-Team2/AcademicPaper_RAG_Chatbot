@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import streamlit as st
 
-from apps.ui import render_page_heading
+from apps.ui import normalize_math, render_page_heading
 from feature.search_list import LocalLibraryBot
 from orchestration.graph import build_graph
 from orchestration.state import initial_state
@@ -162,6 +162,9 @@ def render_deep_search_page() -> None:
                 response, sources = _run_supervisor(prompt)
         except Exception as exc:
             response, sources = f"요청 처리 중 오류가 발생했습니다: {exc}", []
+        # 답변은 모델이 즉석에서 만들어 \( \) 표기가 섞여 온다. 화면에 뿌리기 전에
+        # 맞춰 두면 대화 기록에도 고쳐진 채로 남아 다시 그릴 때 또 깨지지 않는다.
+        response = normalize_math(response)
         st.markdown(response)
         for source in sources:
             st.caption(

@@ -1279,8 +1279,17 @@ class PaperExtraRAGBot:
         self.logger.log(LogCode.SUMMARY_STARTED, action="summarize", paper_id=paper["id"])
         print(f"[System] 📝 '{paper['title']}' 핵심 요약 보고서 생성 실행 중...")
 
+        # 수식 구분자를 못박는다. 지정하지 않으면 모델이 \( \) 와 \[ \] 로 내놓는데,
+        # Streamlit 의 마크다운은 $ 만 수식으로 읽어서 화면에서 수식이 통째로 깨진다.
+        # 번역본은 이미 $ 를 쓰므로 요약본도 같은 표기로 맞춘다.
         prompt = ChatPromptTemplate.from_messages([
-            ("system", "당신은 수석 연구원입니다. 아래 논문 내용을 바탕으로 4개 항목(1. 연구 배경 및 목적, 2. 핵심 방법론 및 아키텍처, 3. 주요 실험 성과, 4. 연구의 시사점 및 한계점)으로 심층 요약하세요."),
+            ("system",
+             "당신은 수석 연구원입니다. 아래 논문 내용을 바탕으로 4개 항목"
+             "(1. 연구 배경 및 목적, 2. 핵심 방법론 및 아키텍처, 3. 주요 실험 성과, "
+             "4. 연구의 시사점 및 한계점)으로 심층 요약하세요.\n"
+             "수식은 반드시 달러 기호로 감쌉니다. 문장 안에서는 $...$ 로, "
+             "독립된 줄에서는 $$...$$ 로 씁니다. "
+             "\\( \\) 나 \\[ \\] 표기는 절대 쓰지 않습니다."),
             ("user", "논문 제목: {title}\n\n{content}")
         ])
         chain = prompt | self.llm

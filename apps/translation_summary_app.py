@@ -8,7 +8,7 @@ from typing import Any
 
 import streamlit as st
 
-from apps.ui import render_page_heading
+from apps.ui import normalize_math, render_page_heading
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -20,7 +20,8 @@ SUMMARY_SUFFIX = "_summary"
 @st.cache_data(show_spinner=False)
 def _read_markdown(path: str, modified_time: float) -> str:
     del modified_time
-    return Path(path).read_text(encoding="utf-8")
+    # 이미 만들어 둔 요약본은 \( \) 표기라 화면에 뿌리기 직전에 맞춘다.
+    return normalize_math(Path(path).read_text(encoding="utf-8"))
 
 
 def _title(artifact: dict[str, Any]) -> str:
