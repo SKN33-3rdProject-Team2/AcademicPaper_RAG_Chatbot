@@ -58,22 +58,103 @@ arXiv와 PDF 학술 논문을 수집·파싱·인덱싱하여 논문 검색, 번
 ## 프로젝트 구조
 
 ```text
-Project-Team-2/
-├── .env                 # 환경변수 파일 (Git 제외)
-├── .env.sample          # 환경변수 예시 템플릿
-├── README.md            # 프로젝트 설명서
-└── src/                 # 소스코드 최상위 폴더
-    ├── feature/         # 피처 생성 및 가공 관련 기능을 구현할 폴더
-    └── tools/           # 공통 도구 및 유틸리티 기능을 구현할 폴더
+AcademicPaper_RAG_Chatbot/
+├── .env.sample
+├── .gitignore
+├── main.py
+├── web_app.py
+├── build_evaluation_corpus.py
+├── evaluate_langsmith.py
+├── evaluate_rag_langsmith.py
+├── requirements.txt
+├── requirements-orchestration.txt
+├── apps/
+│   ├── __init__.py
+│   ├── ui.py
+│   ├── search_app.py
+│   ├── paper_list_app.py
+│   ├── translation_summary_app.py
+│   └── deep_search_app.py
+├── data/
+│   ├── paper_extract/
+│   │   ├── extracted_papers.db
+│   │   ├── extracted_papers.json
+│   │   └── extracted_papers_ref.db
+│   ├── paper_list/
+│   │   ├── saved_papers.db
+│   │   └── saved_papers.json
+│   └── paper_save/
+│       └── downloaded_pdfs.json
+├── log/
+│   ├── __init__.py
+│   ├── app_logger.py
+│   ├── log_codes.py
+│   └── log_messages.py
+├── src/
+│   ├── config/
+│   │   ├── model_config.yaml
+│   │   ├── nvidia_config.yaml
+│   │   └── ollama_config.yaml
+│   ├── feature/
+│   │   ├── supervisor_chatbot.py
+│   │   ├── search.py
+│   │   ├── search_list.py
+│   │   ├── paper_extractor.py
+│   │   └── deep_research.py
+│   ├── orchestration/
+│   │   ├── __init__.py
+│   │   ├── state.py
+│   │   ├── routing.py
+│   │   ├── graph.py
+│   │   ├── adapters.py
+│   │   ├── rag_chain.py
+│   │   └── evaluation.py
+│   ├── services/
+│   │   ├── __init__.py
+│   │   ├── generation_options.py
+│   │   ├── model_config_service.py
+│   │   ├── nvidia_service.py
+│   │   ├── ollama_service.py
+│   │   ├── translation_service.py
+│   │   ├── translation_checkpoint_service.py
+│   │   ├── translation_markdown_service.py
+│   │   ├── summary_checkpoint_service.py
+│   │   ├── summary_markdown_store.py
+│   │   └── summary_vector_store.py
+│   └── tools/
+│       ├── __init__.py
+│       ├── keyword_tool.py
+│       ├── translation_tool.py
+│       ├── summary_tool.py
+│       └── deep_search_tool.py
+└── tests/
+    ├── __init__.py
+    ├── test_keyword_tool.py
+    ├── test_translation_tool.py
+    ├── test_summary_tool.py
+    ├── test_paper_extractor.py
+    ├── test_deep_research.py
+    └── test_orchestration.py
 ```
 
 ### 디렉터리 및 파일 설명
 
-- `.env`: API 키 등 외부에 공개하면 안 되는 로컬 환경변수를 관리합니다. Git에는 포함하지 않습니다.
-- `.env.sample`: 프로젝트 실행에 필요한 환경변수의 이름과 예시 값을 공유합니다.
-- `README.md`: 프로젝트 개요, 설정 방법, 실행 방법 및 협업 규칙을 기록합니다.
-- `src/feature/`: 피처 생성 및 가공과 관련된 기능과 함수를 구현합니다.
-- `src/tools/`: 여러 기능에서 공통으로 사용하는 도구와 유틸리티 함수를 구현합니다.
+- `main.py`: Supervisor 기반 LangGraph 챗봇의 CLI 진입점입니다.
+- `web_app.py`: Streamlit 웹 애플리케이션 진입점입니다.
+- `apps/`: 검색, 논문 목록, 번역·요약, Deep Research 화면을 구성합니다.
+- `data/`: 논문 메타데이터, 본문 추출 결과와 다운로드 기록을 저장합니다.
+- `log/`: 공통 로거, 로그 코드와 메시지를 관리합니다.
+- `src/config/`: Ollama, NVIDIA 및 기능별 모델 설정을 관리합니다.
+- `src/feature/`: 논문 검색·추출·Deep Research와 Supervisor 챗봇 기능을 구현합니다.
+- `src/orchestration/`: LangGraph 상태, 라우팅, RAG 체인과 평가 로직을 관리합니다.
+- `src/services/`: 모델 호출, 체크포인트, Markdown 및 Vector DB 저장 기능을 제공합니다.
+- `src/tools/`: 키워드 생성, 번역, 요약과 Deep Research용 도구를 제공합니다.
+- `tests/`: 각 기능과 오케스트레이션의 자동화 테스트를 포함합니다.
+- `build_evaluation_corpus.py`: RAG 평가용 논문 코퍼스를 생성합니다.
+- `evaluate_langsmith.py`: Supervisor 라우팅을 LangSmith에서 평가합니다.
+- `evaluate_rag_langsmith.py`: 검색·답변·인용 품질을 LangSmith에서 평가합니다.
+- `.env.sample`: 프로젝트 실행에 필요한 환경변수의 예시를 제공합니다.
+- `requirements*.txt`: 기본 및 LangGraph 관련 Python 의존성을 관리합니다.
 
 ## 실행 방법
 
