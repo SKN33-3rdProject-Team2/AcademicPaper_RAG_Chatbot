@@ -42,7 +42,7 @@ LATEX_ENV_BLOCK_PATTERN = re.compile(
 )
 DISPLAY_MATH_PATTERN = re.compile(r"\$\$.*?\$\$|\\\[.*?\\\]", re.DOTALL)
 INLINE_MATH_PATTERN = re.compile(
-    r"(?<!\\)\$(?!\$)(?:\\.|[^$\n])+?(?<!\\)\$|\\\(.*?\\\)",
+    r"(?<![\\$])\$(?!\$)(?:\\.|[^$\n])+?(?<!\\)\$(?!\$)|\\\(.*?\\\)",
     re.DOTALL,
 )
 HTML_TABLE_TAG_PATTERN = re.compile(
@@ -217,44 +217,83 @@ def rebuild_markdown_table(original: str, translated: str) -> str:
     return result
 
 
-def _is_protected_block(block: str) -> bool:
-    """청크 경계에서 분리하면 안 되는 수식·표 블록인지 확인한다."""
-    normalized = block.casefold()
-    has_protected_environment = any(
-        environment in PROTECTED_LATEX_ENVIRONMENTS
-        for _action, environment in LATEX_ENV_PATTERN.findall(block)
-    )
-    return (
-        "$$" in block
-        or r"\[" in block
-        or r"\]" in block
-        or has_protected_environment
-        or "<table" in normalized
-        or "</table>" in normalized
-        or _is_markdown_table(block)
-    )
+def _math_spans(text: str) -> list[tuple[int, int]]:
+    """분할할 수 없는 LaTeX 수식 범위를 겹치지 않게 반환한다."""
+    candidates = [
+        (match.start(), match.end())
+        for pattern in (
+            LATEX_ENV_BLOCK_PATTERN,
+            DISPLAY_MATH_PATTERN,
+            INLINE_MATH_PATTERN,
+        )
+        for match in pattern.finditer(text)
+    ]
+    candidates.sort(key=lambda span: (span[0], -(span[1] - span[0])))
+
+    spans: list[tuple[int, int]] = []
+    for start, end in candidates:
+        if spans and start < spans[-1][1]:
+            continue
+        spans.append((start, end))
+    return spans
 
 
 def _split_oversized_text(block: str, max_chars: int) -> list[str]:
-    """보호 블록을 제외한 긴 문단을 줄·문자 경계에서 나눈다."""
-    if len(block) <= max_chars or _is_protected_block(block):
+    """긴 문단을 나누되 수식은 통째로 다음 조각으로 넘긴다."""
+    if len(block) <= max_chars:
+        return [block]
+
+    # 표는 행 일부만 다음 청크로 넘어가면 구조가 깨지므로 기존처럼 통째로 둔다.
+    normalized = block.casefold()
+    if "<table" in normalized or "</table>" in normalized or _is_markdown_table(block):
         return [block]
 
     pieces: list[str] = []
     current = ""
-    for line in block.splitlines(keepends=True):
-        if current and len(current) + len(line) > max_chars:
-            pieces.append(current.rstrip("\n"))
-            current = ""
-        while len(line) > max_chars:
+
+    def flush() -> None:
+        nonlocal current
+        piece = current.rstrip("\n")
+        if piece:
+            pieces.append(piece)
+        current = ""
+
+    def append_text(text: str) -> None:
+        """일반 텍스트는 제한에 맞추되 가능하면 줄 경계에서 자른다."""
+        nonlocal current
+        remaining = text
+        while remaining:
             room = max_chars - len(current)
-            current += line[:room]
-            pieces.append(current.rstrip("\n"))
-            current = ""
-            line = line[room:]
-        current += line
-    if current:
-        pieces.append(current.rstrip("\n"))
+            if room == 0:
+                flush()
+                room = max_chars
+            if len(remaining) <= room:
+                current += remaining
+                break
+
+            cut = room
+            newline = remaining.rfind("\n", 0, room + 1)
+            if newline >= 0:
+                cut = newline + 1
+            current += remaining[:cut]
+            flush()
+            remaining = remaining[cut:]
+
+    cursor = 0
+    for start, end in _math_spans(block):
+        append_text(block[cursor:start])
+        formula = block[start:end]
+        if current and len(current) + len(formula) > max_chars:
+            flush()
+        if len(formula) > max_chars:
+            # 수식 자체가 제한보다 길어도 훼손하지 않고 단독 조각으로 유지한다.
+            flush()
+            pieces.append(formula)
+        else:
+            current += formula
+        cursor = end
+    append_text(block[cursor:])
+    flush()
     return [piece for piece in pieces if piece]
 
 
