@@ -2,6 +2,48 @@
 
 arXiv와 PDF 학술 논문을 수집·파싱·인덱싱하여 논문 검색, 번역, 요약, 심층 질의응답 및 논문 간 연관성 분석을 제공하는 RAG(Retrieval-Augmented Generation) 챗봇 프로젝트입니다.
 
+## 목차
+
+- [팀원 및 역할](#팀원-및-역할)
+- [프로젝트 목표](#프로젝트-목표)
+- [주요 기능](#주요-기능)
+- [시스템 흐름](#시스템-흐름)
+- [기술 스택](#기술-스택)
+- [프로젝트 구조](#프로젝트-구조)
+- [아키텍처와 LangGraph](#아키텍처와-langgraph)
+- [스크린샷](#스크린샷)
+- [실행 방법](#실행-방법)
+  - [1. 환경변수 설정](#1-환경변수-설정)
+  - [2. Ollama 설치 및 실행](#2-ollama-설치-및-실행)
+  - [3. 프로젝트용 Ollama 모델 다운로드](#3-프로젝트용-ollama-모델-다운로드)
+  - [4. Ollama 실행 확인](#4-ollama-실행-확인)
+  - [5. Supervisor 챗봇 실행 (CLI)](#5-supervisor-챗봇-실행-cli)
+  - [6. Streamlit 웹 앱 실행](#6-streamlit-웹-앱-실행)
+  - [7. 평가(Evaluation) 실행](#7-평가evaluation-실행)
+- [Git & GitHub 협업 규칙](#git--github-협업-규칙)
+  - [권장 작업 흐름](#권장-작업-흐름)
+  - [1. 브랜치 규칙](#1-브랜치-규칙)
+  - [2. 커밋 메시지 규칙](#2-커밋-메시지-규칙)
+  - [3. Pull Request 및 병합 규칙](#3-pull-request-및-병합-규칙)
+  - [4. 프로젝트 구조 및 데이터 관리](#4-프로젝트-구조-및-데이터-관리)
+- [절대 금지 사항 (Don'ts)](#절대-금지-사항-donts)
+- [사용 패키지](#사용-패키지)
+- [데이터 출처](#데이터-출처)
+- [AI 에이전트 작업 제약 사항](#ai-에이전트-작업-제약-사항)
+- [알려진 제약 사항 (Known Limitations)](#알려진-제약-사항-known-limitations)
+- [향후 개선 사항](#향후-개선-사항)
+- [회고](#회고)
+
+## 팀원 및 역할
+
+| 팀원 | 담당 역할 | 주요 담당 기능 |
+| --- | --- | --- |
+| 박기현 | 팀장·통합 | 일정 관리, 기능 통합, LangGraph |
+| 오호민 | PM·논문 검색 | arXiv 검색, 논문 저장, PDF 다운로드 |
+| 김영석 | PDF 처리 | PDF 본문·표·수식 추출 및 정제 |
+| 정현두 | 번역·요약 | 전문 번역, 4단 구조 요약, ChromaDB |
+| 김성환 | RAG 질의응답 | Retriever, Deep Research, 출처 반환 |
+
 ## 프로젝트 목표
 
 - **비용 최소화:** 상시 GPU 서버 대신 로컬 CPU 임베딩과 외부 API(Ollama/NVIDIA Build)를 조합하여 고정 인프라 비용을 최소화합니다.
@@ -38,6 +80,8 @@ PDF 본문 추출 (로컬 파싱 + NVIDIA Vision 보정)
 RAG가 찾은 논문을 넘겨받아 Deep Research로 심층 분석
 ```
 
+자세한 노드 구성과 분기 조건은 아래 [아키텍처와 LangGraph](#아키텍처와-langgraph) 섹션을 참고합니다.
+
 ## 기술 스택
 
 | 구분 | 기술 |
@@ -60,27 +104,27 @@ RAG가 찾은 논문을 넘겨받아 Deep Research로 심층 분석
 
 ```text
 AcademicPaper_RAG_Chatbot/
-├── .env.sample
+├── .env.sample                     # 환경변수 예시 파일
 ├── .gitignore
-├── main.py
-├── web_app.py
-├── requirements.txt
-├── apps/
+├── main.py                         # Supervisor 기반 LangGraph 챗봇의 CLI 진입점
+├── web_app.py                      # Streamlit 웹 애플리케이션 진입점
+├── requirements.txt                # 기본 Python 의존성 (평가 전용은 evaluation/requirements.txt)
+├── apps/                           # 챗봇 대화·검색·논문 목록·번역/요약·Deep Research 화면
 │   ├── __init__.py
 │   ├── ui.py
-│   ├── chatbot_app.py
-│   ├── search_app.py
-│   ├── paper_list_app.py
-│   ├── translation_summary_app.py
-│   └── deep_search_app.py
-├── data/
+│   ├── chatbot_app.py              # Supervisor 챗봇 대화 화면
+│   ├── search_app.py               # arXiv 논문 검색 화면
+│   ├── paper_list_app.py           # 저장된 논문 목록 화면
+│   ├── translation_summary_app.py  # 번역·요약 화면
+│   └── deep_search_app.py          # Deep Research 화면
+├── data/                           # 논문 메타데이터, 본문 추출 결과, 번역·요약·벡터 DB 저장 위치
 │   ├── paper_extract/
 │   ├── paper_list/
 │   ├── paper_save/
 │   ├── translations/
 │   └── vector_db/
-├── evaluation/
-│   ├── README.md
+├── evaluation/                     # LangSmith·RAGAS·DeepEval·Promptfoo 평가 스크립트와 설정
+│   ├── README.md                   # 평가 실행 방법 안내
 │   ├── dataset.py
 │   ├── run_evaluation.py
 │   ├── quality_metrics.py
@@ -95,29 +139,29 @@ AcademicPaper_RAG_Chatbot/
 │   ├── build_evaluation_corpus.py
 │   ├── evaluate_langsmith.py
 │   ├── evaluate_rag_langsmith.py
-│   └── requirements.txt
-├── log/
+│   └── requirements.txt            # RAGAS/DeepEval 등 평가 전용 의존성
+├── log/                            # 공통 로거, 로그 코드와 메시지
 │   ├── __init__.py
 │   ├── app_logger.py
 │   ├── log_codes.py
 │   └── log_messages.py
 ├── src/
 │   ├── config/
-│   │   └── model_config.yaml
-│   ├── feature/
+│   │   └── model_config.yaml       # 기능별 모델·Provider 설정 (API 키는 .env로 관리)
+│   ├── feature/                    # 논문 검색·추출·Deep Research·Supervisor 챗봇 기능
 │   │   ├── supervisor_chatbot.py
 │   │   ├── search.py
 │   │   ├── search_list.py
 │   │   ├── paper_extractor.py
 │   │   └── deep_research.py
-│   ├── orchestration/
+│   ├── orchestration/              # LangGraph 상태·라우팅·그래프 구성·평가 로직
 │   │   ├── __init__.py
 │   │   ├── state.py
 │   │   ├── routing.py
 │   │   ├── graph.py
 │   │   ├── adapters.py
 │   │   └── evaluation.py
-│   ├── services/
+│   ├── services/                   # 모델 호출, 체크포인트, Markdown·Vector DB 저장
 │   │   ├── __init__.py
 │   │   ├── generation_options.py
 │   │   ├── model_config_service.py
@@ -130,13 +174,13 @@ AcademicPaper_RAG_Chatbot/
 │   │   ├── summary_markdown_store.py
 │   │   ├── summary_vector_store.py
 │   │   └── fulltext_vector_store.py
-│   └── tools/
+│   └── tools/                      # 키워드 생성, 번역, 요약, Deep Research 도구
 │       ├── __init__.py
 │       ├── keyword_tool.py
 │       ├── translation_tool.py
 │       ├── summary_tool.py
 │       └── deep_search_tool.py
-└── tests/
+└── tests/                          # 기능·오케스트레이션 자동화 테스트
     ├── __init__.py
     ├── test_keyword_tool.py
     ├── test_translation_tool.py
@@ -149,22 +193,44 @@ AcademicPaper_RAG_Chatbot/
     └── test_evaluation_frameworks.py
 ```
 
-### 디렉터리 및 파일 설명
+## 아키텍처와 LangGraph
 
-- `main.py`: Supervisor 기반 LangGraph 챗봇의 CLI 진입점입니다.
-- `web_app.py`: Streamlit 웹 애플리케이션 진입점입니다.
-- `apps/`: 챗봇 대화, 검색, 논문 목록, 번역·요약, Deep Research 화면을 구성합니다.
-- `data/`: 논문 메타데이터, 본문 추출 결과, 번역·요약·벡터 DB 저장 위치입니다.
-- `evaluation/`: LangSmith·RAGAS·DeepEval·Promptfoo 기반 평가 스크립트와 설정을 관리합니다. 실행 방법은 [`evaluation/README.md`](evaluation/README.md)를 참고합니다.
-- `log/`: 공통 로거, 로그 코드와 메시지를 관리합니다.
-- `src/config/`: 기능별 모델 설정(`model_config.yaml`)을 관리합니다. Provider별 API 키는 `.env`에서 관리합니다.
-- `src/feature/`: 논문 검색·추출·Deep Research와 Supervisor 챗봇 기능을 구현합니다.
-- `src/orchestration/`: LangGraph 상태, 라우팅, 그래프 구성과 평가 로직을 관리합니다.
-- `src/services/`: 모델 호출, 체크포인트, Markdown 및 Vector DB 저장 기능을 제공합니다.
-- `src/tools/`: 키워드 생성, 번역, 요약과 Deep Research용 도구를 제공합니다.
-- `tests/`: 각 기능과 오케스트레이션의 자동화 테스트를 포함합니다.
-- `.env.sample`: 프로젝트 실행에 필요한 환경변수의 예시를 제공합니다.
-- `requirements.txt`: 기본 Python 의존성을 관리합니다. 평가 프레임워크 전용 의존성은 `evaluation/requirements.txt`에 별도로 관리합니다.
+Supervisor 노드가 매 턴 사용자 요청을 해석해 다음에 실행할 노드를 결정하고, 각 실행 노드는 결과를 다시 Supervisor에 돌려줘 다음 단계를 재판단하는 순환 그래프(StateGraph) 구조입니다.
+
+아키텍처
+![img_2.png](img_2.png)
+
+LangGraph
+![img.png](img.png)
+
+### 핵심 분기 규칙
+
+- **신규 자료 검색:** Supervisor → `키워드 생성` → `arXiv 검색` → `다운로드` → `본문 추출` → `번역` → `요약·벡터 저장` → Supervisor로 복귀
+- **검색 결과 없음:** `arXiv 검색` 결과가 비어 있으면 이전과 다른 키워드로 최대 1회 재생성·재시도 후, 그래도 없으면 종료
+- **RAG 질의응답:** Supervisor → `RAG`가 저장된 요약에서 관련 문서를 조회
+  - 관련 문서를 찾으면 그 문서를 들고 `Deep Research`로 전달해 심층 분석
+  - 관련 문서가 없으면 Supervisor가 검색·다운로드·추출·번역·요약을 다시 거쳐 `RAG`를 재실행
+- **Deep Research:** 심층 답변이 충분하면 종료, 설명이 부족하면 Supervisor에게 추가 검색을 요청
+- **번역:** 이미 추출된 본문이 있으면 바로 번역, 없으면 먼저 본문 추출부터 수행
+- **종료 조건:** 한 턴에 최대 12단계까지만 진행하며, 초과 시 오류로 종료
+
+## 스크린샷
+
+### 저장된 논문 목록 · 초록 한국어 번역
+
+![img_3.png](img_3.png)
+
+### arXiv 논문 검색 및 요약
+
+![img_5.png](img_5.png)
+
+### 저장된 논문 상세 보기(Deep Research)
+
+![img_6.png](img_6.png)
+
+### 논문 번역·요약 결과
+
+![img_4.png](img_4.png)
 
 ## 실행 방법
 
@@ -301,37 +367,15 @@ python3 main.py
 python main.py
 ```
 
-질문을 명령어에 바로 전달할 수도 있습니다.
-
-#### macOS
-
-```bash
-python3 main.py "arXiv에서 RAG 관련 논문을 검색해줘"
-```
-
-#### Windows PowerShell
-
-```powershell
-python main.py "arXiv에서 RAG 관련 논문을 검색해줘"
-```
-
 > 실행 전에 `requirements.txt` 의존성 설치와 `.env` 설정을 완료해야 합니다.
 
 Ollama 설치 관련 세부 사항은 [macOS 공식 문서](https://docs.ollama.com/macos)와 [Windows 공식 문서](https://docs.ollama.com/windows)를 참고합니다.
 
 ### 6. Streamlit 웹 앱 실행
 
-CLI 대신 웹 화면으로 사용하려면 프로젝트 루트에서 다음 명령어를 실행합니다.
-
-#### macOS
+CLI 대신 웹 화면으로 사용하려면 프로젝트 루트에서 다음 명령어를 실행합니다. macOS·Windows 모두 동일합니다.
 
 ```bash
-streamlit run web_app.py
-```
-
-#### Windows PowerShell
-
-```powershell
 streamlit run web_app.py
 ```
 
@@ -352,6 +396,22 @@ streamlit run web_app.py
 ### 7. 평가(Evaluation) 실행
 
 LangSmith, RAGAS, DeepEval, Promptfoo를 이용한 평가 방법은 [`evaluation/README.md`](evaluation/README.md)에 별도로 정리되어 있습니다. RAGAS/DeepEval은 메인 실행 환경과 의존성 충돌을 피하기 위해 별도 평가 환경(`evaluation/requirements.txt`)에 설치합니다.
+
+#### 평가 결과
+
+| 프레임워크 | 지표 | 결과 | 상태 |
+| --- | --- | --- | --- |
+| RAGAS | Faithfulness | 0.7692 | 샘플 1건 실행 완료 |
+| RAGAS | Answer Relevancy | 0.7963 | 샘플 1건 실행 완료 |
+| RAGAS | ID 기반 Context Precision | 0.0 | 진행 중 (원인 확인 필요) |
+| RAGAS | ID 기반 Context Recall | 0.0 | 진행 중 (원인 확인 필요) |
+| DeepEval | Answer Relevancy | 1.00 | 샘플 1건 실행 완료 |
+| DeepEval | Faithfulness | 0.90 | 샘플 1건 실행 완료 |
+| DeepEval | Tool Correctness (`deep_research`/`pipeline`) | - | 진행 중 |
+| Promptfoo | 회귀 테스트 | - | 진행 중 |
+| LangSmith | 라우팅·전체 파이프라인 평가 | - | 진행 중 |
+
+> 위 RAGAS/DeepEval 수치는 실제 RAG 케이스 1건(`rag-1906.04972v1-method`)을 격리된 평가 환경에서 라이브로 실행해 얻은 결과입니다. 전체 평가셋(46건) 기준 결과와 나머지 항목은 아직 산출되지 않아 비워 두었습니다.
 
 ---
 
@@ -431,43 +491,24 @@ LangSmith, RAGAS, DeepEval, Promptfoo를 이용한 평가 방법은 [`evaluation
 - 충돌 해결 과정에서 다른 팀원의 코드를 임의로 삭제하거나 동의 없이 수정하기
 
 ---
+
 ## 사용 패키지
 
-### 외부 패키지 (`requirements.txt`)
+필수 패키지 목록은 [`requirements.txt`](requirements.txt)를 확인합니다. 평가 프레임워크(RAGAS/DeepEval 등) 전용 의존성은 [`evaluation/requirements.txt`](evaluation/requirements.txt)에 별도로 관리합니다.
 
-| 패키지 | 용도 |
-| --- | --- |
-| `langchain-core` | LangChain 메시지·러너블 등 핵심 인터페이스 |
-| `langchain-openai` | OpenAI Chat/Embedding 모델 연동 (`ChatOpenAI`, `OpenAIEmbeddings`) |
-| `langgraph` | Supervisor 에이전트 오케스트레이션(StateGraph) |
-| `langsmith` | 실행 트레이싱 및 평가(`@traceable`) |
-| `python-dotenv` | `.env` 환경변수 로드 |
-| `PyYAML` | `src/config/model_config.yaml` 파싱 |
-| `arxiv` | arXiv API 논문 검색 |
-| `chromadb` | 논문 요약 임베딩 벡터 DB |
-| `sentence-transformers` | 임베딩 모델(`BAAI/bge-m3`) 로컬 실행 |
-| `pymupdf` (import명 `fitz`) | PDF 본문·페이지 이미지 추출 |
-| `streamlit` | 웹 UI(`web_app.py`, `apps/`) |
-| `pydantic` | 구조화 출력·스키마 검증(`SupervisorDecision` 등) |
+---
 
-### 평가 전용 패키지 (`evaluation/requirements.txt`, 메인 환경과 분리 설치)
+## 데이터 출처
 
-| 패키지 | 용도 |
-| --- | --- |
-| `ragas` | RAGAS 평가 지표(Context Precision/Recall, Faithfulness, Answer Relevancy) |
-| `deepeval` | DeepEval 평가 지표(Answer Relevancy, Faithfulness, Tool Correctness) |
-| `langchain-community==0.3.31` | `ragas` 임포트 호환을 위한 버전 고정 (최신 버전엔 `vertexai` 모듈이 빠져 있어 깨짐) |
+- **논문 메타데이터·원문 PDF:** [arXiv API](https://arxiv.org/help/api) — arXiv의 Open Access 정책에 따라 이용하며, 논문 저작권은 각 원저자·arXiv에 있습니다.
+- **임베딩 모델:** Hugging Face `BAAI/bge-m3`
+- **LLM:**
+  - OpenAI GPT 계열 (Supervisor 라우팅, RAGAS/DeepEval 평가용 judge 모델)
+  - Ollama `qwen2.5:3b` (로컬, 검색 키워드 생성·요약)
+  - NVIDIA Build API `nemotron-3-nano-omni-30b-a3b-reasoning` (PDF Vision 추출, 번역)
+- **원본 데이터 보존 원칙:** 다운로드한 PDF와 추출된 본문은 원형을 수정하지 않고 `data/` 하위에 저장합니다 (Git 협업 규칙의 데이터 관리 항목 참고).
 
-### 코드에서 쓰지만 `requirements.txt`에 빠진 패키지 (확인 필요)
-
-| 패키지 | 사용 위치 | 비고 |
-| --- | --- | --- |
-| `langchain_chroma` | `src/tools/deep_search_tool.py` | ChromaDB를 LangChain 벡터스토어 인터페이스로 사용 |
-| `requests` | `src/feature/search_list.py` | PDF 다운로드용 HTTP 호출. 다른 패키지의 전이 의존성으로 설치돼 있어서 지금은 동작하지만, 명시적으로 선언 안 돼 있음 |
-
-### 표준 라이브러리 (설치 불필요)
-
-`argparse`, `base64`, `collections`, `concurrent.futures`, `contextlib`, `dataclasses`, `hashlib`, `html`, `json`, `os`, `pathlib`, `re`, `shutil`, `sqlite3`, `sys`, `threading`, `time`, `typing`, `urllib`, `uuid`
+---
 
 ## AI 에이전트 작업 제약 사항
 
@@ -479,3 +520,61 @@ LangSmith, RAGAS, DeepEval, Promptfoo를 이용한 평가 방법은 [`evaluation
 - **수정 제안 방식**: 폴더·파일을 마음대로 수정하지 않으며, 수정이 필요한 부분은 먼저 코드(변경 내용)와 그 이유를 보여주는 방식으로 제안합니다.
   - 사용자가 수정을 원할 경우, 변경 내용과 이유를 다시 한번 명시하고 최종 확인을 받습니다.
   - 사용자가 확인 후 수정을 요구할 때만 실제로 수정합니다.
+
+---
+
+## 알려진 제약 사항 (Known Limitations)
+
+- RAGAS의 ID 기반 Context Precision/Recall 지표가 0으로 산출되는 케이스가 확인됐으며, 원인은 아직 파악 중입니다.
+- FastAPI 백엔드는 아직 구축되지 않아 CLI(`main.py`)와 Streamlit(`web_app.py`)으로만 사용할 수 있습니다.
+- 수식·표가 밀집된 PDF 구간에서는 번역이 실패할 수 있습니다. 이 경우 해당 논문만 건너뛰고 나머지 파이프라인은 계속 진행됩니다.
+- 자연어로 "1번 논문"처럼 번호를 지정해 특정 논문을 선택하는 기능은 제한적으로만 동작합니다.
+- 평가(RAGAS/DeepEval) 결과는 현재 샘플 케이스 기준으로만 검증됐고, 전체 평가셋(46건) 기준 결과는 아직 없습니다.
+- 로컬 Ollama(`qwen2.5:3b`) 기반 검색 키워드 생성은 요청 문장에 번역·요약 등 다른 지시가 섞여 있으면 관련 없는 키워드를 만들어낼 수 있습니다.
+
+---
+
+## 향후 개선 사항
+
+- **경량 모델 적용을 통한 응답 속도 개선**: 작업별 특성에 적합한 모델을 적용하여 추론 시간과 운영 비용을 최적화합니다.
+- **GUI 환경을 고려한 서비스 구조 개선**: 현재 파이프라인을 API 기반으로 모듈화하여 후속 GUI 프로젝트와 안정적으로 연동합니다.
+- **챗봇 처리 병목 최소화**: 비동기·병렬 처리와 캐싱을 적용하여 검색, 추출, 번역·요약 과정의 대기 시간을 단축합니다.
+- **로컬 DB의 온라인 DB 전환**: 현재 SQLite·ChromaDB(로컬 파일 기반)로 관리하는 논문 메타데이터·벡터 데이터를 온라인 DB(PostgreSQL, 관리형 Vector DB 등)로 이전하여 다중 사용자 접근과 GUI/FastAPI 연동 시 동시성·확장성을 확보합니다.
+
+---
+
+## 회고
+
+### 박기현 (팀장, LangGraph)
+
+- Supervisor 하나가 검색·다운로드·추출·번역·요약·RAG·Deep Research를 전부 조율하다 보니, 상태(State)를 턴마다 제대로 초기화하지 않으면 이전 턴의 결과가 다음 턴에 새어 들어가는 문제를 겪었다. 멀티턴 대화를 유지하면서도 턴 단위로 깨끗하게 리셋해야 하는 부분의 경계를 정확히 잡는 게 생각보다 까다로웠다.
+- "논문 찾아서 번역하고 요약해서 설명해줘"처럼 한 문장에 여러 의도가 섞인 요청을 하나의 실행 계획으로 묶어내는 라우팅 로직을 여러 번 다듬었다. 처음엔 키워드 하나만 보고 조기에 판단해버려서 뒷부분 요청이 누락되는 경우가 많았는데, 복합 요청을 먼저 감지하고 전체 파이프라인을 계획하도록 바꾸고 나서 안정됐다.
+- 팀 전체 일정 조율보다 통합 코드에 시간을 더 많이 썼다. 다음엔 기능별 인터페이스(입출력 형식)를 더 일찍 확정해서 통합 단계의 재작업을 줄이고 싶다.
+
+### 오호민 (PM, 논문 검색)
+
+- arXiv 검색 자체는 API가 안정적이라 어렵지 않았지만, LLM이 생성한 검색 키워드에 "최신", "논문", "분석" 같은 범용 단어가 섞이면 전혀 관계없는 논문이 검색되는 문제가 있었다. 키워드 품질이 검색 결과 품질을 그대로 좌우한다는 걸 체감했다.
+- 검색 결과를 로컬 서재(DB)에 저장하는 시점을 놓치면, 뒤 단계(다운로드·추출)에서 논문을 다시 못 찾는 문제가 있었다. 검색-저장-다운로드가 하나의 흐름으로 이어지도록 순서를 맞추는 게 중요했다.
+- PM으로서 각 기능별 담당자가 병렬로 작업하는 과정에서 일정과 인터페이스를 조율하는 게 예상보다 신경 쓸 게 많았다.
+
+### 김영석 (PDF 처리)
+
+- 로컬 파싱만으로는 수식·표가 포함된 페이지에서 정보 손실이 많아서, NVIDIA Vision API로 페이지 이미지를 다시 읽게 하는 하이브리드 방식을 적용했다. 페이지당 처리 속도와 복원 정확도 사이에서 어떤 모델·해상도를 쓸지 계속 실험해야 했다.
+- 논문마다 레이아웃이 달라서 표·수식 경계를 일관되게 잡는 규칙을 만드는 데 시간이 많이 들었다. 예외 케이스를 하나씩 다루기보다 처음부터 좀 더 일반화된 규칙을 고민했으면 좋았을 것 같다.
+
+### 정현두 (번역·요약)
+
+- 로컬 모델(translategemma:4b)로 번역했을 때 속도가 너무 느리고(4천자 조각당 약 5분), 수식·표를 보호 토큰으로 감싸 번역을 맡겨도 모델이 토큰 경계를 건드려 버리는 경우가 있었다. NVIDIA Build API로 옮기면서 속도는 15배 가까이 개선됐지만, 그 원인을 찾아 재현하는 과정이 오래 걸렸다.
+- 4단 구조 요약(목적·방법·결과·한계)을 만들 때, 모델이 스키마의 키는 채워도 값이 비어버리는 경우가 있어서 여러 모델 크기로 비교 실험을 해야 했다. 결과적으로 이미 키워드 생성에 쓰던 `qwen2.5:3b`가 크기 대비 가장 안정적이었다.
+- 번역 하나가 실패하면 이미 끝난 다른 논문 번역까지 통째로 날아가는 구조였던 걸 뒤늦게 발견했다. 여러 논문을 한 번에 처리하는 배치 로직은 처음부터 "일부 실패해도 나머지는 살린다"는 전제로 설계했어야 했다.
+
+### 김성환 (RAG 질의응답)
+
+- RAG가 답을 찾았을 때 그 문서를 Deep Research로 넘겨 심층 분석까지 자연스럽게 이어지도록 만드는 부분이 가장 신경 쓰였다. 근거 문서가 없을 때 무한정 재시도하지 않도록 재시도 횟수와 종료 조건을 명확히 설계해야 했다.
+- 출처(source)를 답변과 함께 정확히 반환하는 것도 중요했지만, RAGAS·DeepEval로 실제 점수를 내보니 Context Precision/Recall처럼 ID 매칭이 필요한 지표에서 값이 0으로 나오는 경우가 있어 왜 그런지 더 들여다봐야 한다는 걸 알게 됐다.
+
+### 팀 전체
+
+- 검색→다운로드→추출→번역→요약→RAG→Deep Research로 이어지는 파이프라인을 각자 맡은 구간별로 개발했는데, 정작 전체를 이어 붙였을 때 한 구간의 출력 형식이 다음 구간이 기대하는 입력과 미묘하게 다른 경우가 여러 번 나왔다. 인터페이스(입출력 스키마)를 더 일찍, 더 명확하게 합의했으면 통합 단계가 훨씬 수월했을 것이다.
+- 로컬 모델(Ollama)만으로는 속도·품질 한계가 뚜렷해서 NVIDIA Build API를 일부 단계에 도입했는데, 이 결정 하나로 번역 속도가 크게 개선됐다. 비용과 성능을 함께 고려한 모델 선택이 프로젝트 전체 품질에 미치는 영향이 크다는 걸 배웠다.
+- LangSmith 외에 RAGAS·DeepEval·Promptfoo까지 평가 프레임워크를 확장하면서, "그럴듯해 보이는 답변"과 "실제로 근거에 충실한 답변"은 다르다는 걸 수치로 확인할 수 있었다. 다음 프로젝트에서는 평가 체계를 개발 초반부터 같이 구축하고 싶다.
