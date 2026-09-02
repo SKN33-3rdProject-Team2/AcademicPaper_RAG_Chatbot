@@ -4,53 +4,54 @@ arXiv와 PDF 학술 논문을 수집·파싱·인덱싱하여 논문 검색, 번
 
 ## 프로젝트 목표
 
-- **비용 최소화:** 상시 GPU 서버 대신 로컬 CPU 임베딩과 외부 파싱 API를 조합하여 고정 인프라 비용을 최소화합니다.
+- **비용 최소화:** 상시 GPU 서버 대신 로컬 CPU 임베딩과 외부 API(Ollama/NVIDIA Build)를 조합하여 고정 인프라 비용을 최소화합니다.
 - **선택적 논문 처리:** 검색 결과의 초록을 먼저 확인한 뒤 사용자가 선택한 논문만 다운로드하고 인덱싱합니다.
 - **신뢰도 높은 답변:** 검색 결과와 논문 본문을 근거로 답변하여 환각을 줄입니다.
 - **단계별 사용자 개입:** 번역과 요약 이후 사용자가 원하는 후속 분석을 선택할 수 있도록 Human-in-the-Loop 흐름을 적용합니다.
-- **기능별 에이전트 분리:** LangGraph 기반 에이전트가 검색, 수집, 번역, 요약, 유사도 분석 및 심층 질의응답을 나누어 처리합니다.
+- **기능별 에이전트 분리:** LangGraph 기반 Supervisor 에이전트가 검색, 수집, 번역, 요약, RAG 질의응답 및 Deep Research를 나누어 처리합니다.
 
 ## 주요 기능
 
-1. 사용자 의도와 검색 조건 확인
-2. arXiv API를 이용한 논문 메타데이터 및 초록 검색
-3. 사용자가 선택한 논문만 다운로드 및 파싱
-4. 텍스트 정제, 청킹, 임베딩 및 Vector DB 저장
-5. 학술 논문 전문 번역과 4단 구조 요약
-6. 유사 논문 및 핵심 참고문헌 추천
-7. 논문 본문과 수식에 대한 심층 질의응답
+1. 사용자 의도와 검색 조건 확인 후 arXiv API로 논문 메타데이터·초록 검색
+2. 사용자가 선택한 논문만 다운로드 및 하이브리드(로컬 파싱 + NVIDIA Vision) PDF 파싱
+3. 텍스트 정제, 청킹, 임베딩 및 ChromaDB 저장
+4. 학술 논문 전문 번역(NVIDIA Build API)과 4단 구조 요약
+5. 저장된 요약 기반 RAG 질의응답 및 근거·출처 제시
+6. RAG가 찾은 논문을 이어받아 심층 분석하는 Deep Research
+7. CLI(`main.py`)와 Streamlit 웹 앱(`web_app.py`) 두 가지 인터페이스 제공
 
 ## 시스템 흐름
 
 ```text
-✅ 사용자 질의
+사용자 질의
 ↓
-✅ 의도 파악 및 검색 조건 확인
+Supervisor가 의도 파악 및 다음 단계 계획 수립
 ↓
-✅ arXiv 논문 검색 및 초록 목록 제공
+arXiv 검색 / 로컬 서재 조회 / 다운로드
 ↓
-✅ 사용자가 처리할 논문 선택
+PDF 본문 추출 (로컬 파싱 + NVIDIA Vision 보정)
 ↓
-🔜 PDF 다운로드 및 하이브리드 파싱
+전문 번역(NVIDIA Build API) → 4단 구조 요약 → ChromaDB 저장
 ↓
-🔜 텍스트 정제 → 청킹 → 임베딩 → ChromaDB 저장
+저장된 요약 기반 RAG 질의응답
 ↓
-🔜 전문 번역 및 구조화 요약
-↓
-❌ 사용자 선택에 따라 유사 논문 탐색 또는 심층 질의응답
+RAG가 찾은 논문을 넘겨받아 Deep Research로 심층 분석
 ```
 
-## 예상 기술 스택
+## 기술 스택
 
 | 구분 | 기술 |
 | --- | --- |
 | Language | Python |
 | Agent Workflow | LangGraph |
+| Web UI | Streamlit |
 | Paper Search | arXiv API |
-| PDF Parsing | PyMuPDF, NVIDIA Build API |
-| Local LLM | Ollama (`qwen2.5:3b`, `translategemma:4b`, `gemma3:4b`) |
+| PDF Parsing | PyMuPDF, NVIDIA Build API (Vision) |
+| Translation | NVIDIA Build API (`nemotron-3-nano-omni`) |
+| Keyword / Summary LLM | Ollama (`qwen2.5:3b`) |
 | Embedding | Hugging Face `BAAI/bge-m3` |
 | Vector DB | ChromaDB |
+| Evaluation | LangSmith, RAGAS, DeepEval, Promptfoo |
 | Architecture | RAG, Human-in-the-Loop, Multi-Agent |
 
 > 기술 스택은 구현 및 검증 과정에서 변경될 수 있습니다.
@@ -63,28 +64,38 @@ AcademicPaper_RAG_Chatbot/
 ├── .gitignore
 ├── main.py
 ├── web_app.py
-├── build_evaluation_corpus.py
-├── evaluate_langsmith.py
-├── evaluate_rag_langsmith.py
 ├── requirements.txt
-├── requirements-orchestration.txt
 ├── apps/
 │   ├── __init__.py
 │   ├── ui.py
+│   ├── chatbot_app.py
 │   ├── search_app.py
 │   ├── paper_list_app.py
 │   ├── translation_summary_app.py
 │   └── deep_search_app.py
 ├── data/
 │   ├── paper_extract/
-│   │   ├── extracted_papers.db
-│   │   ├── extracted_papers.json
-│   │   └── extracted_papers_ref.db
 │   ├── paper_list/
-│   │   ├── saved_papers.db
-│   │   └── saved_papers.json
-│   └── paper_save/
-│       └── downloaded_pdfs.json
+│   ├── paper_save/
+│   ├── translations/
+│   └── vector_db/
+├── evaluation/
+│   ├── README.md
+│   ├── dataset.py
+│   ├── run_evaluation.py
+│   ├── quality_metrics.py
+│   ├── framework_cases.py
+│   ├── ragas_evaluation.py
+│   ├── deepeval_evaluation.py
+│   ├── promptfoo/
+│   │   ├── promptfooconfig.yaml
+│   │   ├── provider.py
+│   │   ├── assertions.py
+│   │   └── tests.py
+│   ├── build_evaluation_corpus.py
+│   ├── evaluate_langsmith.py
+│   ├── evaluate_rag_langsmith.py
+│   └── requirements.txt
 ├── log/
 │   ├── __init__.py
 │   ├── app_logger.py
@@ -105,7 +116,6 @@ AcademicPaper_RAG_Chatbot/
 │   │   ├── routing.py
 │   │   ├── graph.py
 │   │   ├── adapters.py
-│   │   ├── rag_chain.py
 │   │   └── evaluation.py
 │   ├── services/
 │   │   ├── __init__.py
@@ -118,7 +128,8 @@ AcademicPaper_RAG_Chatbot/
 │   │   ├── translation_markdown_service.py
 │   │   ├── summary_checkpoint_service.py
 │   │   ├── summary_markdown_store.py
-│   │   └── summary_vector_store.py
+│   │   ├── summary_vector_store.py
+│   │   └── fulltext_vector_store.py
 │   └── tools/
 │       ├── __init__.py
 │       ├── keyword_tool.py
@@ -129,30 +140,31 @@ AcademicPaper_RAG_Chatbot/
     ├── __init__.py
     ├── test_keyword_tool.py
     ├── test_translation_tool.py
+    ├── test_translation_markdown_service.py
     ├── test_summary_tool.py
     ├── test_paper_extractor.py
     ├── test_deep_research.py
-    └── test_orchestration.py
+    ├── test_orchestration.py
+    ├── test_quality_evaluation.py
+    └── test_evaluation_frameworks.py
 ```
 
 ### 디렉터리 및 파일 설명
 
 - `main.py`: Supervisor 기반 LangGraph 챗봇의 CLI 진입점입니다.
 - `web_app.py`: Streamlit 웹 애플리케이션 진입점입니다.
-- `apps/`: 검색, 논문 목록, 번역·요약, Deep Research 화면을 구성합니다.
-- `data/`: 논문 메타데이터, 본문 추출 결과와 다운로드 기록을 저장합니다.
+- `apps/`: 챗봇 대화, 검색, 논문 목록, 번역·요약, Deep Research 화면을 구성합니다.
+- `data/`: 논문 메타데이터, 본문 추출 결과, 번역·요약·벡터 DB 저장 위치입니다.
+- `evaluation/`: LangSmith·RAGAS·DeepEval·Promptfoo 기반 평가 스크립트와 설정을 관리합니다. 실행 방법은 [`evaluation/README.md`](evaluation/README.md)를 참고합니다.
 - `log/`: 공통 로거, 로그 코드와 메시지를 관리합니다.
-- `src/config/`: Ollama, NVIDIA 및 기능별 모델 설정을 관리합니다.
+- `src/config/`: 기능별 모델 설정(`model_config.yaml`)을 관리합니다. Provider별 API 키는 `.env`에서 관리합니다.
 - `src/feature/`: 논문 검색·추출·Deep Research와 Supervisor 챗봇 기능을 구현합니다.
-- `src/orchestration/`: LangGraph 상태, 라우팅, RAG 체인과 평가 로직을 관리합니다.
+- `src/orchestration/`: LangGraph 상태, 라우팅, 그래프 구성과 평가 로직을 관리합니다.
 - `src/services/`: 모델 호출, 체크포인트, Markdown 및 Vector DB 저장 기능을 제공합니다.
 - `src/tools/`: 키워드 생성, 번역, 요약과 Deep Research용 도구를 제공합니다.
 - `tests/`: 각 기능과 오케스트레이션의 자동화 테스트를 포함합니다.
-- `build_evaluation_corpus.py`: RAG 평가용 논문 코퍼스를 생성합니다.
-- `evaluate_langsmith.py`: Supervisor 라우팅을 LangSmith에서 평가합니다.
-- `evaluate_rag_langsmith.py`: 검색·답변·인용 품질을 LangSmith에서 평가합니다.
 - `.env.sample`: 프로젝트 실행에 필요한 환경변수의 예시를 제공합니다.
-- `requirements*.txt`: 기본 및 LangGraph 관련 Python 의존성을 관리합니다.
+- `requirements.txt`: 기본 Python 의존성을 관리합니다. 평가 프레임워크 전용 의존성은 `evaluation/requirements.txt`에 별도로 관리합니다.
 
 ## 실행 방법
 
@@ -228,20 +240,15 @@ ollama serve
 
 ### 3. 프로젝트용 Ollama 모델 다운로드
 
-이 프로젝트는 기능별로 다음 세 모델을 사용합니다.
+번역은 NVIDIA Build API로 처리하고, 로컬 Ollama는 다음 한 모델만 사용합니다.
 
 | 기능 | 모델 |
 | --- | --- |
 | arXiv 검색 키워드 생성 | `qwen2.5:3b` |
-| 논문 번역 | `translategemma:4b` |
-| 논문 요약 | `gemma3:4b` |
-
-macOS Terminal 또는 Windows PowerShell에서 아래 명령어를 차례대로 실행합니다.
+| 논문 요약 | `qwen2.5:3b` |
 
 ```bash
 ollama pull qwen2.5:3b
-ollama pull translategemma:4b
-ollama pull gemma3:4b
 ```
 
 모델 이름은 [`src/config/model_config.yaml`](src/config/model_config.yaml)의 설정과 동일해야 합니다.
@@ -254,7 +261,7 @@ ollama pull gemma3:4b
 ollama list
 ```
 
-목록에 `qwen2.5:3b`, `translategemma:4b`, `gemma3:4b`가 모두 표시되어야 합니다.
+목록에 `qwen2.5:3b`가 표시되어야 합니다.
 
 모델 응답을 직접 확인합니다.
 
@@ -278,9 +285,9 @@ Invoke-RestMethod http://localhost:11434/api/tags
 
 모델 목록이 JSON 형태로 반환되면 프로젝트에서 Ollama를 사용할 준비가 완료된 것입니다.
 
-### 5. Supervisor 챗봇 실행
+### 5. Supervisor 챗봇 실행 (CLI)
 
-프로젝트 루트에서 다음 명령어를 실행한 뒤 질문을 입력합니다.
+프로젝트 루트에서 다음 명령어를 실행합니다. 질문을 입력하면 계속 대화가 이어지고, `q`(또는 `종료`/`exit`/`quit`)를 입력하면 종료됩니다.
 
 #### macOS
 
@@ -308,9 +315,43 @@ python3 main.py "arXiv에서 RAG 관련 논문을 검색해줘"
 python main.py "arXiv에서 RAG 관련 논문을 검색해줘"
 ```
 
-> 실행 전에 프로젝트 Python 의존성과 `.env` 설정을 완료해야 합니다. LangGraph 관련 의존성은 `requirements-orchestration.txt`에 정의되어 있습니다.
+> 실행 전에 `requirements.txt` 의존성 설치와 `.env` 설정을 완료해야 합니다.
 
 Ollama 설치 관련 세부 사항은 [macOS 공식 문서](https://docs.ollama.com/macos)와 [Windows 공식 문서](https://docs.ollama.com/windows)를 참고합니다.
+
+### 6. Streamlit 웹 앱 실행
+
+CLI 대신 웹 화면으로 사용하려면 프로젝트 루트에서 다음 명령어를 실행합니다.
+
+#### macOS
+
+```bash
+streamlit run web_app.py
+```
+
+#### Windows PowerShell
+
+```powershell
+streamlit run web_app.py
+```
+
+브라우저가 자동으로 열리지 않으면 터미널에 표시된 `Local URL`(기본값 `http://localhost:8501`)로 직접 접속합니다.
+
+`web_app.py`는 사이드바 메뉴와 화면 전환만 담당하며, 실제 기능 화면은 `apps/` 폴더에 모듈로 나뉘어 있습니다.
+
+| 화면 | 파일 |
+| --- | --- |
+| Supervisor 챗봇 대화 | `apps/chatbot_app.py` |
+| arXiv 논문 검색 | `apps/search_app.py` |
+| 저장된 논문 목록 | `apps/paper_list_app.py` |
+| 번역·요약 | `apps/translation_summary_app.py` |
+| Deep Research | `apps/deep_search_app.py` |
+
+> 실행 전에 CLI와 동일하게 `.env` 설정과 Ollama 서버 실행이 완료되어 있어야 합니다.
+
+### 7. 평가(Evaluation) 실행
+
+LangSmith, RAGAS, DeepEval, Promptfoo를 이용한 평가 방법은 [`evaluation/README.md`](evaluation/README.md)에 별도로 정리되어 있습니다. RAGAS/DeepEval은 메인 실행 환경과 의존성 충돌을 피하기 위해 별도 평가 환경(`evaluation/requirements.txt`)에 설치합니다.
 
 ---
 
@@ -388,3 +429,16 @@ Ollama 설치 관련 세부 사항은 [macOS 공식 문서](https://docs.ollama.
 - 다른 팀원의 브랜치에 직접 Commit 또는 Force Push하기
 - 다른 팀원의 브랜치를 동의 없이 병합 대상으로 삼기
 - 충돌 해결 과정에서 다른 팀원의 코드를 임의로 삭제하거나 동의 없이 수정하기
+
+---
+
+## AI 에이전트 작업 제약 사항
+
+- **폴더 구조 변경 금지**: 디렉토리 생성·삭제·이동을 임의로 하지 않습니다. 새 디렉토리가 필요하면 작업을 멈추고 사용자에게 먼저 확인합니다.
+- **명시되지 않은 파일 수정 금지**: 사용자가 직접 언급했거나 명시적으로 승인한 파일 외에는 절대 수정하지 않습니다.
+  - 버그의 근본 원인이 다른 파일에 있다고 판단되더라도, 임의로 확장하지 않고 원인과 수정이 필요한 파일 목록을 먼저 사용자에게 보고한 뒤 승인을 받고 진행합니다.
+  - 여러 파일에 걸친 수정이 필요하면 전체 대상 파일을 목록으로 제시하고 승인을 받습니다.
+  - 승인은 해당 작업 범위에만 유효하며, 이후 다른 작업에 자동으로 적용되지 않습니다.
+- **수정 제안 방식**: 폴더·파일을 마음대로 수정하지 않으며, 수정이 필요한 부분은 먼저 코드(변경 내용)와 그 이유를 보여주는 방식으로 제안합니다.
+  - 사용자가 수정을 원할 경우, 변경 내용과 이유를 다시 한번 명시하고 최종 확인을 받습니다.
+  - 사용자가 확인 후 수정을 요구할 때만 실제로 수정합니다.
