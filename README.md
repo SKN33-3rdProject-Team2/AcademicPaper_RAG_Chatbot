@@ -431,6 +431,43 @@ LangSmith, RAGAS, DeepEval, Promptfoo를 이용한 평가 방법은 [`evaluation
 - 충돌 해결 과정에서 다른 팀원의 코드를 임의로 삭제하거나 동의 없이 수정하기
 
 ---
+## 사용 패키지
+
+### 외부 패키지 (`requirements.txt`)
+
+| 패키지 | 용도 |
+| --- | --- |
+| `langchain-core` | LangChain 메시지·러너블 등 핵심 인터페이스 |
+| `langchain-openai` | OpenAI Chat/Embedding 모델 연동 (`ChatOpenAI`, `OpenAIEmbeddings`) |
+| `langgraph` | Supervisor 에이전트 오케스트레이션(StateGraph) |
+| `langsmith` | 실행 트레이싱 및 평가(`@traceable`) |
+| `python-dotenv` | `.env` 환경변수 로드 |
+| `PyYAML` | `src/config/model_config.yaml` 파싱 |
+| `arxiv` | arXiv API 논문 검색 |
+| `chromadb` | 논문 요약 임베딩 벡터 DB |
+| `sentence-transformers` | 임베딩 모델(`BAAI/bge-m3`) 로컬 실행 |
+| `pymupdf` (import명 `fitz`) | PDF 본문·페이지 이미지 추출 |
+| `streamlit` | 웹 UI(`web_app.py`, `apps/`) |
+| `pydantic` | 구조화 출력·스키마 검증(`SupervisorDecision` 등) |
+
+### 평가 전용 패키지 (`evaluation/requirements.txt`, 메인 환경과 분리 설치)
+
+| 패키지 | 용도 |
+| --- | --- |
+| `ragas` | RAGAS 평가 지표(Context Precision/Recall, Faithfulness, Answer Relevancy) |
+| `deepeval` | DeepEval 평가 지표(Answer Relevancy, Faithfulness, Tool Correctness) |
+| `langchain-community==0.3.31` | `ragas` 임포트 호환을 위한 버전 고정 (최신 버전엔 `vertexai` 모듈이 빠져 있어 깨짐) |
+
+### 코드에서 쓰지만 `requirements.txt`에 빠진 패키지 (확인 필요)
+
+| 패키지 | 사용 위치 | 비고 |
+| --- | --- | --- |
+| `langchain_chroma` | `src/tools/deep_search_tool.py` | ChromaDB를 LangChain 벡터스토어 인터페이스로 사용 |
+| `requests` | `src/feature/search_list.py` | PDF 다운로드용 HTTP 호출. 다른 패키지의 전이 의존성으로 설치돼 있어서 지금은 동작하지만, 명시적으로 선언 안 돼 있음 |
+
+### 표준 라이브러리 (설치 불필요)
+
+`argparse`, `base64`, `collections`, `concurrent.futures`, `contextlib`, `dataclasses`, `hashlib`, `html`, `json`, `os`, `pathlib`, `re`, `shutil`, `sqlite3`, `sys`, `threading`, `time`, `typing`, `urllib`, `uuid`
 
 ## AI 에이전트 작업 제약 사항
 
