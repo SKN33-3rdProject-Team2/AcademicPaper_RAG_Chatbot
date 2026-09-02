@@ -1,95 +1,162 @@
-"""Create a routing dataset and run a LangSmith experiment."""
+"""Sync v3 datasets and run isolated live or cached LangSmith experiments."""
 
 from __future__ import annotations
 
 import argparse
-import sys
+import os
 from pathlib import Path
 from uuid import uuid4
 
 from dotenv import load_dotenv
-
-
-PROJECT_ROOT = Path(__file__).resolve().parent
-SRC_ROOT = PROJECT_ROOT / "src"
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
-load_dotenv(PROJECT_ROOT / ".env")
-
 from langsmith import Client
 from langsmith.evaluation import evaluate
 
-from orchestration.evaluation import route_sequence_accuracy
-from orchestration.routing import SupervisorRouter
-from orchestration.state import initial_state
+from evaluation.dataset_v3 import DATASET_VERSION, SUITES, build_examples
+from evaluation.run_v3_evaluation import evaluators_for, select_budget_400
+from evaluation.v3_runtime import RESULTS_PATH, V3EvaluationTarget, load_cached_results
 
 
-DATASET_NAME = "academic-paper-supervisor-routing-v1"
-ROUTING_EXAMPLES = [
-    ({"query": "arXiv에서 graph RAG 논문을 검색해줘"}, {"expected_steps": ["keyword", "search"]}),
-    ({"query": "내 서재에 저장된 논문 목록을 보여줘"}, {"expected_steps": ["library"]}),
-    ({"query": "paper-001 논문을 번역해줘", "paper_ids": ["paper-001"]}, {"expected_steps": ["extract", "translate"]}),
-    ({"query": "paper-001 논문을 요약해줘", "paper_ids": ["paper-001"]}, {"expected_steps": ["extract", "translate", "summarize"]}),
-    ({"query": "저장된 요약을 근거와 출처를 붙여 설명해줘"}, {"expected_steps": ["rag"]}),
-    ({"query": "로컬 논문들을 비교해서 심층 분석해줘"}, {"expected_steps": ["deep_research"]}),
-]
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(PROJECT_ROOT / ".env", override=False)
 
 
-def ensure_dataset(client: Client, dataset_name: str = DATASET_NAME) -> str:
-    if client.has_dataset(dataset_name=dataset_name):
-        return dataset_name
-    client.create_dataset(
+class CachedTarget:
+    def __init__(self, results_path: str | Path = RESULTS_PATH) -> None:
+        self.records = load_cached_results(results_path)
+
+    def __call__(self, inputs: dict) -> dict:
+        case_id = str(inputs.get("case_id") or "")
+        record = self.records.get(case_id)
+        if record is None:
+            raise KeyError(f"캐시된 v3 실행 결과가 없습니다: {case_id}")
+        return dict(record.get("outputs", {}))
+
+
+def sync_dataset(
+    client: Client,
+    suite: str,
+    *,
+    split: str | None = None,
+    max_cases: int | None = None,
+    budget: int | None = 400,
+) -> str:
+    suffix = f"-{split}" if split else ""
+    budget_suffix = f"-budget{budget}" if budget is not None else ""
+    dataset_name = (
+        f"academic-paper-quality-{DATASET_VERSION}-{suite.replace('_', '-')}"
+        f"{suffix}{budget_suffix}"
+    )
+    if budget == 400:
+        if split is not None:
+            raise ValueError("400건 예산은 전체 분할에서 사용하세요.")
+        examples = [
+            example
+            for example in select_budget_400(build_examples("all"))
+            if example["inputs"]["suite"] == suite
+        ]
+    else:
+        examples = build_examples(suite, split=split)
+    if max_cases is not None:
+        examples = examples[:max_cases]
+    datasets = list(client.list_datasets(dataset_name=dataset_name, limit=1))
+    dataset = datasets[0] if datasets else client.create_dataset(
         dataset_name,
-        description="StateGraph supervisor routing regression set",
+        description=f"Academic-paper isolated {suite} evaluation {DATASET_VERSION}",
+        metadata={
+            "version": DATASET_VERSION,
+            "suite": suite,
+            "split": split or "all",
+            "budget": budget,
+        },
     )
-    client.create_examples(
-        dataset_name=dataset_name,
-        examples=[{"inputs": inputs, "outputs": outputs} for inputs, outputs in ROUTING_EXAMPLES],
-    )
+    existing = {
+        str(example.inputs.get("case_id")): example
+        for example in client.list_examples(dataset_id=dataset.id)
+        if example.inputs.get("case_id")
+    }
+    additions = []
+    for example in examples:
+        case_id = str(example["inputs"]["case_id"])
+        current = existing.get(case_id)
+        if current is None:
+            additions.append(example)
+        elif current.inputs != example["inputs"] or current.outputs != example["outputs"]:
+            client.update_example(
+                current.id,
+                inputs=example["inputs"],
+                outputs=example["outputs"],
+                metadata=example.get("metadata", {}),
+                dataset_id=dataset.id,
+            )
+    if additions:
+        client.create_examples(dataset_id=dataset.id, examples=additions)
     return dataset_name
 
 
-def routing_target(inputs: dict) -> dict:
-    router = SupervisorRouter()
-    state = initial_state(
-        inputs["query"],
-        paper_ids=list(inputs.get("paper_ids", [])),
+def run_suite(
+    client: Client,
+    suite: str,
+    *,
+    source: str = "cached",
+    results_path: str | Path = RESULTS_PATH,
+    split: str | None = None,
+    max_cases: int | None = None,
+    budget: int | None = 400,
+    prefix: str = "academic-paper-v3",
+) -> str:
+    dataset_name = sync_dataset(
+        client,
+        suite,
+        split=split,
+        max_cases=max_cases,
+        budget=budget,
     )
-    decision = router.decide(state)
-    return {"steps": decision.steps, "reason": decision.reason}
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description="LangSmith supervisor routing evaluation")
-    parser.add_argument("--dataset", default=DATASET_NAME)
-    parser.add_argument("--prefix", default="academic-paper-routing")
-    parser.add_argument("--offline-router", action="store_true")
-    args = parser.parse_args()
-
-    client = Client()
-    dataset_name = ensure_dataset(client, args.dataset)
-
-    target = routing_target
-    if args.offline_router:
-        router = SupervisorRouter(use_llm=False)
-
-        def target(inputs: dict) -> dict:
-            state = initial_state(inputs["query"], paper_ids=list(inputs.get("paper_ids", [])))
-            decision = router.decide(state)
-            return {"steps": decision.steps, "reason": decision.reason}
-
+    target = CachedTarget(results_path) if source == "cached" else V3EvaluationTarget(answer_mode="openai")
     experiment = evaluate(
         target,
         data=dataset_name,
-        evaluators=[route_sequence_accuracy],
-        experiment_prefix=f"{args.prefix}-{uuid4().hex[:8]}",
-        description="Supervisor route-sequence accuracy",
-        max_concurrency=2,
+        evaluators=list(evaluators_for(suite)),
+        experiment_prefix=f"{prefix}-{suite}-{uuid4().hex[:8]}",
+        description=f"Isolated corpus v3 {suite} evaluation ({source})",
+        max_concurrency=1,
         client=client,
     )
-    print(f"LangSmith experiment completed: {experiment.experiment_name}")
+    return experiment.experiment_name
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="LangSmith v3 evaluation")
+    parser.add_argument("--suite", choices=("all", *SUITES), default="all")
+    parser.add_argument("--source", choices=("cached", "live"), default="cached")
+    parser.add_argument("--results", type=Path, default=RESULTS_PATH)
+    parser.add_argument("--split", choices=("dev", "regression", "final"))
+    parser.add_argument("--max-cases", type=int)
+    parser.add_argument("--budget", type=int, choices=(400,), default=400)
+    parser.add_argument("--prefix", default="academic-paper-v3")
+    args = parser.parse_args()
+    if not os.getenv("LANGSMITH_API_KEY", "").strip():
+        parser.error("LANGSMITH_API_KEY가 필요합니다.")
+    if args.budget is not None and (args.split is not None or args.max_cases is not None):
+        parser.error("--budget 400은 --split/--max-cases와 함께 사용할 수 없습니다.")
+    client = Client()
+    selected = SUITES if args.suite == "all" else (args.suite,)
+    for suite in selected:
+        name = run_suite(
+            client,
+            suite,
+            source=args.source,
+            results_path=args.results,
+            split=args.split,
+            max_cases=args.max_cases,
+            budget=args.budget,
+            prefix=args.prefix,
+        )
+        print(f"LangSmith experiment completed: {name}")
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+__all__ = ["CachedTarget", "run_suite", "sync_dataset"]

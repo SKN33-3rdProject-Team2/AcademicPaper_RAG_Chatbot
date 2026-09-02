@@ -10,12 +10,13 @@ from typing import Any, Iterable
 
 from dotenv import load_dotenv
 
-from evaluation.framework_cases import FrameworkCase, collect_framework_cases
+from evaluation.framework_cases import FrameworkCase, load_v3_framework_cases
+from evaluation.v3_runtime import RESULTS_PATH
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MODEL = "gpt-4o-mini"
-SUPPORTED_SUITES = ("rag", "deep_research", "pipeline")
+SUPPORTED_SUITES = ("rag", "retrieval", "deep_research", "pipeline")
 
 
 def build_deepeval_payloads(cases: Iterable[FrameworkCase]) -> list[dict[str, Any]]:
@@ -79,7 +80,7 @@ def run_deepeval(
         for payload in build_deepeval_payloads(cases)
         if payload["metadata"]["suite"] == suite
     ]
-    if suite == "rag":
+    if suite in {"rag", "retrieval"}:
         payloads = [payload for payload in payloads if payload["retrieval_context"]]
     else:
         payloads = [payload for payload in payloads if payload["expected_tools"]]
@@ -99,7 +100,7 @@ def run_deepeval(
         )
         for payload in payloads
     ]
-    if suite == "rag":
+    if suite in {"rag", "retrieval"}:
         metrics = [
             AnswerRelevancyMetric(threshold=threshold, model=model, async_mode=False),
             FaithfulnessMetric(threshold=threshold, model=model, async_mode=False),
@@ -144,8 +145,9 @@ def run_deepeval(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Academic-paper DeepEval evaluation")
-    parser.add_argument("--suite", choices=SUPPORTED_SUITES, default="rag")
+    parser.add_argument("--suite", choices=SUPPORTED_SUITES, default="retrieval")
     parser.add_argument("--max-cases", type=int)
+    parser.add_argument("--results", type=Path, default=RESULTS_PATH)
     parser.add_argument("--model", default=os.getenv("EVALUATION_MODEL", DEFAULT_MODEL))
     parser.add_argument("--threshold", type=float, default=0.7)
     parser.add_argument("--output", type=Path)
@@ -157,7 +159,11 @@ def main() -> int:
     if not 0 <= args.threshold <= 1:
         parser.error("threshold는 0~1이어야 합니다.")
 
-    cases = collect_framework_cases(args.suite, max_cases=args.max_cases)
+    cases = load_v3_framework_cases(
+        args.suite,
+        results_path=args.results,
+        max_cases=args.max_cases,
+    )
     report = run_deepeval(
         cases,
         suite=args.suite,

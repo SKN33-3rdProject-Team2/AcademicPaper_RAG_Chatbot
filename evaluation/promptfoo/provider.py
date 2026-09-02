@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 import sys
 from typing import Any
-from uuid import uuid4
 
 from dotenv import load_dotenv
 
@@ -18,17 +17,10 @@ for path in (PROJECT_ROOT, SRC_ROOT):
         sys.path.insert(0, str(path))
 load_dotenv(PROJECT_ROOT / ".env", override=False)
 
-from feature.supervisor_chatbot import SupervisorChatbot
+from evaluation.v3_runtime import load_cached_results
 
 
-_CHATBOT: SupervisorChatbot | None = None
-
-
-def _chatbot() -> SupervisorChatbot:
-    global _CHATBOT
-    if _CHATBOT is None:
-        _CHATBOT = SupervisorChatbot()
-    return _CHATBOT
+_RESULTS = load_cached_results()
 
 
 def _prompt_text(prompt: object) -> str:
@@ -54,17 +46,11 @@ def call_api(prompt: str, options: dict, context: dict) -> dict[str, Any]:
 
     query = _prompt_text(prompt).strip()
     variables = context.get("vars", {}) if isinstance(context, dict) else {}
-    paper_ids = variables.get("paper_ids") or []
-    if isinstance(paper_ids, str):
-        paper_ids = [value.strip() for value in paper_ids.split(",") if value.strip()]
-    try:
-        result = _chatbot().invoke(
-            query,
-            thread_id=f"promptfoo-{uuid4().hex[:10]}",
-            paper_ids=list(paper_ids),
-        )
-    except Exception as error:
-        return {"error": f"{type(error).__name__}: {error}"}
+    case_id = str(variables.get("case_id") or "")
+    record = _RESULTS.get(case_id)
+    if record is None:
+        return {"error": f"400건 캐시에 없는 평가 케이스입니다: {case_id}"}
+    result = dict(record.get("outputs", {}))
 
     errors = [str(value) for value in result.get("errors", []) if str(value).strip()]
     if errors:
@@ -74,6 +60,8 @@ def call_api(prompt: str, options: dict, context: dict) -> dict[str, Any]:
         "metadata": {
             "steps": list(result.get("node_history", [])),
             "source_count": len(result.get("sources", [])),
+            "case_id": case_id,
+            "query": query,
         },
     }
 
