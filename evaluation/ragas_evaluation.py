@@ -16,7 +16,8 @@ from typing import Any, Iterable
 
 from dotenv import load_dotenv
 
-from evaluation.framework_cases import FrameworkCase, collect_framework_cases
+from evaluation.framework_cases import FrameworkCase, load_v3_framework_cases
+from evaluation.v3_runtime import RESULTS_PATH
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -35,7 +36,7 @@ def build_ragas_rows(cases: Iterable[FrameworkCase]) -> list[dict[str, Any]]:
 
     rows: list[dict[str, Any]] = []
     for case in cases:
-        if case.suite != "rag" or case.errors or not case.answer:
+        if case.suite not in {"rag", "retrieval"} or case.errors or not case.answer:
             continue
         # Refusal correctness is already measured by the deterministic suite.
         # RAGAS grounding metrics require retrieved evidence, so refusal cases
@@ -123,6 +124,7 @@ def run_ragas(
 def main() -> int:
     parser = argparse.ArgumentParser(description="Academic-paper RAGAS evaluation")
     parser.add_argument("--max-cases", type=int)
+    parser.add_argument("--results", type=Path, default=RESULTS_PATH)
     parser.add_argument("--model", default=os.getenv("EVALUATION_MODEL", DEFAULT_MODEL))
     parser.add_argument(
         "--embedding-model",
@@ -135,7 +137,11 @@ def main() -> int:
     if not os.getenv("OPENAI_API_KEY", "").strip():
         parser.error("OPENAI_API_KEY가 필요합니다.")
 
-    cases = collect_framework_cases("rag", max_cases=args.max_cases)
+    cases = load_v3_framework_cases(
+        "retrieval",
+        results_path=args.results,
+        max_cases=args.max_cases,
+    )
     report = run_ragas(cases, model=args.model, embedding_model=args.embedding_model)
     rendered = json.dumps(report, ensure_ascii=False, indent=2, default=str)
     if args.output:

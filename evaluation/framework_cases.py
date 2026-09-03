@@ -8,6 +8,8 @@ evaluation frameworks do not each invent a different dataset format.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import json
+from pathlib import Path
 from typing import Any, Iterable
 
 
@@ -144,4 +146,40 @@ def collect_framework_cases(
     ]
 
 
-__all__ = ["FrameworkCase", "collect_framework_cases"]
+def load_v3_framework_cases(
+    suite: str,
+    *,
+    results_path: str | Path | None = None,
+    max_cases: int | None = None,
+) -> list[FrameworkCase]:
+    """Load completed v3 graph results without invoking the application again."""
+
+    from evaluation.v3_runtime import RESULTS_PATH
+
+    path = Path(results_path or RESULTS_PATH)
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"v3 실행 결과가 없습니다: {path}. run_v3_evaluation을 먼저 실행하세요."
+        )
+    allowed = {"retrieval", "refusal"} if suite == "rag" else {suite}
+    cases: list[FrameworkCase] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        record = json.loads(line)
+        inputs = record.get("inputs", {})
+        if str(inputs.get("suite")) not in allowed:
+            continue
+        cases.append(
+            FrameworkCase.from_result(
+                inputs,
+                record.get("outputs", {}),
+                record.get("reference", {}),
+            )
+        )
+        if max_cases is not None and len(cases) >= max_cases:
+            break
+    return cases
+
+
+__all__ = ["FrameworkCase", "collect_framework_cases", "load_v3_framework_cases"]

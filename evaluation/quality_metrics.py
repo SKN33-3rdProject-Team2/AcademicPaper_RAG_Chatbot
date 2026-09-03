@@ -133,6 +133,56 @@ def translation_term_recall(
     )
 
 
+def extraction_title_accuracy(
+    inputs: dict[str, Any],
+    outputs: dict[str, Any],
+    reference_outputs: dict[str, Any] | None = None,
+) -> EvaluationResult:
+    """Check that the isolated extraction DB preserved the selected title."""
+
+    expected = str(_reference(reference_outputs).get("expected_title") or "").strip()
+    actual = str(outputs.get("title") or "").strip()
+    if not expected:
+        return EvaluationResult(
+            key="extraction_title_accuracy",
+            score=None,
+            comment="expected_title이 없어 평가하지 않음",
+        )
+    return EvaluationResult(
+        key="extraction_title_accuracy",
+        score=float(_normalized_lookup(expected) == _normalized_lookup(actual)),
+        metadata={"expected_title": expected, "actual_title": actual},
+    )
+
+
+def extraction_content_completeness(
+    inputs: dict[str, Any],
+    outputs: dict[str, Any],
+    reference_outputs: dict[str, Any] | None = None,
+) -> EvaluationResult:
+    """Score minimum page and character requirements without an LLM judge."""
+
+    reference = _reference(reference_outputs)
+    expected_pages = max(1, int(reference.get("expected_min_pages") or 1))
+    expected_chars = max(1, int(reference.get("expected_min_characters") or 1))
+    actual_pages = max(0, int(outputs.get("n_pages") or 0))
+    actual_chars = max(0, int(outputs.get("n_chars") or 0))
+    score = (
+        min(actual_pages / expected_pages, 1.0)
+        + min(actual_chars / expected_chars, 1.0)
+    ) / 2
+    return EvaluationResult(
+        key="extraction_content_completeness",
+        score=score,
+        metadata={
+            "expected_min_pages": expected_pages,
+            "actual_pages": actual_pages,
+            "expected_min_characters": expected_chars,
+            "actual_characters": actual_chars,
+        },
+    )
+
+
 def summary_title_preservation(
     inputs: dict[str, Any],
     outputs: dict[str, Any],
@@ -195,6 +245,59 @@ def required_term_recall(
         score=score,
         comment="required_terms가 없어 평가하지 않음" if score is None else None,
         metadata={"expected": list(expected), "matched": matched},
+    )
+
+
+def passage_section_recall_at_5(
+    inputs: dict[str, Any],
+    outputs: dict[str, Any],
+    reference_outputs: dict[str, Any] | None = None,
+) -> EvaluationResult:
+    """Check whether the expected evidence section appears in the top five passages."""
+
+    expected = str(_reference(reference_outputs).get("reference_section") or "").strip()
+    if not expected:
+        return EvaluationResult(
+            key="passage_section_recall_at_5",
+            score=None,
+            comment="reference_section이 없어 평가하지 않음",
+        )
+    retrieved = [
+        str(source.get("section") or "").strip()
+        for source in list(outputs.get("sources") or [])[:5]
+        if isinstance(source, dict)
+    ]
+    return EvaluationResult(
+        key="passage_section_recall_at_5",
+        score=float(expected in retrieved),
+        metadata={"expected_section": expected, "retrieved_sections": retrieved},
+    )
+
+
+def passage_section_reciprocal_rank(
+    inputs: dict[str, Any],
+    outputs: dict[str, Any],
+    reference_outputs: dict[str, Any] | None = None,
+) -> EvaluationResult:
+    """Measure the rank of the first passage from the expected evidence section."""
+
+    expected = str(_reference(reference_outputs).get("reference_section") or "").strip()
+    if not expected:
+        return EvaluationResult(
+            key="passage_section_mrr",
+            score=None,
+            comment="reference_section이 없어 평가하지 않음",
+        )
+    retrieved = [
+        str(source.get("section") or "").strip()
+        for source in list(outputs.get("sources") or [])[:5]
+        if isinstance(source, dict)
+    ]
+    rank = next((index for index, section in enumerate(retrieved, 1) if section == expected), None)
+    return EvaluationResult(
+        key="passage_section_mrr",
+        score=0.0 if rank is None else 1.0 / rank,
+        metadata={"expected_section": expected, "first_relevant_rank": rank},
     )
 
 
@@ -352,6 +455,11 @@ ARTIFACT_EVALUATORS = (
     summary_numeric_recall,
 )
 
+EXTRACTION_EVALUATORS = (
+    extraction_title_accuracy,
+    extraction_content_completeness,
+)
+
 DEEP_RESEARCH_EVALUATORS = (deep_research_completion, required_term_recall)
 PIPELINE_EVALUATORS = (pipeline_completion,)
 
@@ -359,12 +467,17 @@ PIPELINE_EVALUATORS = (pipeline_completion,)
 __all__ = [
     "ARTIFACT_EVALUATORS",
     "DEEP_RESEARCH_EVALUATORS",
+    "EXTRACTION_EVALUATORS",
     "PIPELINE_EVALUATORS",
     "QualityGrade",
     "QualityJudgeEvaluators",
     "deep_research_completion",
+    "extraction_content_completeness",
+    "extraction_title_accuracy",
     "latex_preservation",
     "markdown_table_preservation",
+    "passage_section_recall_at_5",
+    "passage_section_reciprocal_rank",
     "pipeline_completion",
     "required_term_recall",
     "summary_acronym_recall",
