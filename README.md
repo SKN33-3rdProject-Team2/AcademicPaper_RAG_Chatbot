@@ -1,6 +1,6 @@
 # Project-Team-2 / Academic Paper RAG Chatbot
 
-arXiv와 PDF 학술 논문을 수집·파싱·인덱싱하여 논문 검색, 번역, 요약, 심층 질의응답 및 논문 간 연관성 분석을 제공하는 RAG(Retrieval-Augmented Generation) 챗봇 프로젝트입니다.
+arXiv와 PDF 학술 논문을 수집·파싱·인덱싱하여 논문 검색, 번역, 요약 및 근거 기반 심층 질의응답을 제공하는 RAG(Retrieval-Augmented Generation) 챗봇 프로젝트입니다.
 
 ## 목차
 
@@ -46,7 +46,7 @@ arXiv와 PDF 학술 논문을 수집·파싱·인덱싱하여 논문 검색, 번
 
 ## 프로젝트 목표
 
-- **비용 최소화:** 상시 GPU 서버 대신 로컬 CPU 임베딩과 외부 API(Ollama/NVIDIA Build)를 조합하여 고정 인프라 비용을 최소화합니다.
+- **비용 최소화:** 상시 GPU 서버 대신 로컬 Ollama·CPU 임베딩과 NVIDIA Build API 및 OpenAI API를 조합하여 고정 인프라 비용을 최소화합니다.
 - **선택적 논문 처리:** 검색 결과의 초록을 먼저 확인한 뒤 사용자가 선택한 논문만 다운로드하고 인덱싱합니다.
 - **신뢰도 높은 답변:** 검색 결과와 논문 본문을 근거로 답변하여 환각을 줄입니다.
 - **단계별 사용자 개입:** 번역과 요약 이후 사용자가 원하는 후속 분석을 선택할 수 있도록 Human-in-the-Loop 흐름을 적용합니다.
@@ -95,7 +95,7 @@ RAG가 찾은 논문을 넘겨받아 Deep Research로 심층 분석
 | Keyword / Summary LLM | Ollama (`qwen2.5:3b`) |
 | Embedding | Hugging Face `BAAI/bge-m3` |
 | Vector DB | ChromaDB |
-| Evaluation | LangSmith, RAGAS, DeepEval, Promptfoo |
+| Evaluation | 400건 평가 코퍼스 v3, LangSmith, RAGAS·DeepEval·Promptfoo 어댑터 |
 | Architecture | RAG, Human-in-the-Loop, Multi-Agent |
 
 > 기술 스택은 구현 및 검증 과정에서 변경될 수 있습니다.
@@ -106,6 +106,7 @@ RAG가 찾은 논문을 넘겨받아 Deep Research로 심층 분석
 AcademicPaper_RAG_Chatbot/
 ├── .env.sample                     # 환경변수 예시 파일
 ├── .gitignore
+├── figures/                         # README용 시스템 흐름도 및 Streamlit 화면 이미지
 ├── main.py                         # Supervisor 기반 LangGraph 챗봇의 CLI 진입점
 ├── web_app.py                      # Streamlit 웹 애플리케이션 진입점
 ├── requirements.txt                # 기본 Python 의존성 (평가 전용은 evaluation/requirements.txt)
@@ -125,10 +126,14 @@ AcademicPaper_RAG_Chatbot/
 │   └── vector_db/
 ├── evaluation/                     # LangSmith·RAGAS·DeepEval·Promptfoo 평가 스크립트와 설정
 │   ├── README.md                   # 평가 실행 방법 안내
+│   ├── DELIVERABLE_HANDOFF.txt     # 평가 산출물 인수인계 및 제출 지침
 │   ├── dataset.py
-│   ├── run_evaluation.py
-│   ├── quality_metrics.py
+│   ├── dataset_v3.py
 │   ├── framework_cases.py
+│   ├── quality_metrics.py
+│   ├── run_evaluation.py
+│   ├── run_v3_evaluation.py
+│   ├── v3_runtime.py
 │   ├── ragas_evaluation.py
 │   ├── deepeval_evaluation.py
 │   ├── promptfoo/
@@ -139,6 +144,13 @@ AcademicPaper_RAG_Chatbot/
 │   ├── build_evaluation_corpus.py
 │   ├── evaluate_langsmith.py
 │   ├── evaluate_rag_langsmith.py
+│   ├── corpus_v3/                   # 운영 DB와 분리된 평가 전용 코퍼스
+│   │   ├── README.md
+│   │   ├── build_corpus.py
+│   │   ├── manifest.jsonl           # 평가 논문 40편
+│   │   ├── dataset_v3.jsonl         # 후보 문항 650건
+│   │   └── generated/
+│   │       └── evaluation_summary_v3.json
 │   └── requirements.txt            # RAGAS/DeepEval 등 평가 전용 의존성
 ├── log/                            # 공통 로거, 로그 코드와 메시지
 │   ├── __init__.py
@@ -193,15 +205,32 @@ AcademicPaper_RAG_Chatbot/
     └── test_evaluation_frameworks.py
 ```
 
+### 데이터 제출물 배치
+
+대용량 논문 데이터는 소프트웨어 코드와 분리하여 제출합니다. `2팀_수집_및_전처리_데이터.zip`을 압축 해제한 뒤 다음 경로에 배치합니다.
+
+| 데이터 제출물 폴더 | 프로젝트 경로 |
+| --- | --- |
+| `01_수집_검색결과/` | `data/paper_list/` |
+| `02_수집_원문PDF/` | `data/paper_save/` |
+| `03_전처리_본문추출/` | `data/paper_extract/` |
+| `04_전처리_번역/` | `data/translations/` |
+| `05_전처리_요약/` | `data/summaries/` |
+| `06_임베딩_벡터DB/` | `data/vector_db/` |
+
+평가용 코퍼스는 운영 데이터와 분리되어 `evaluation/corpus_v3/`에서 관리합니다.
+
 ## 아키텍처와 LangGraph
 
 Supervisor 노드가 매 턴 사용자 요청을 해석해 다음에 실행할 노드를 결정하고, 각 실행 노드는 결과를 다시 Supervisor에 돌려줘 다음 단계를 재판단하는 순환 그래프(StateGraph) 구조입니다.
 
-아키텍처
-![img_2.png](img_2.png)
+### 전체 처리 흐름
 
-LangGraph
-![img.png](img.png)
+![Academic Paper RAG Chatbot 전체 처리 흐름](figures/img_2.png)
+
+### LangGraph 세부 흐름
+
+![Supervisor 기반 LangGraph 세부 흐름](figures/img.png)
 
 ### 핵심 분기 규칙
 
@@ -218,25 +247,45 @@ LangGraph
 
 ### 저장된 논문 목록 · 초록 한국어 번역
 
-![img_3.png](img_3.png)
+![저장된 논문 목록과 초록 한국어 번역 화면](figures/img_3.png)
 
 ### arXiv 논문 검색 및 요약
 
-![img_5.png](img_5.png)
+![arXiv 논문 검색과 요약 화면](figures/img_5.png)
 
 ### 저장된 논문 상세 보기(Deep Research)
 
-![img_6.png](img_6.png)
+![선택 논문 Deep Research 화면](figures/img_6.png)
 
 ### 논문 번역·요약 결과
 
-![img_4.png](img_4.png)
+![논문 번역과 구조화 요약 결과 화면](figures/img_4.png)
 
 ## 실행 방법
 
 ### 1. 환경변수 설정
 
 저장소를 내려받은 뒤 `.env.sample` 파일을 복사하여 `.env` 파일을 생성합니다.
+
+실행 전 Python 3.11 이상 환경에서 기본 의존성을 설치합니다.
+
+#### macOS / Linux
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+#### Windows PowerShell
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
 
 #### macOS / Linux
 
@@ -303,6 +352,8 @@ ollama serve
 ```
 
 > Ollama가 이미 백그라운드에서 실행 중이면 `ollama serve`를 다시 실행할 필요가 없습니다.
+
+자세한 설치 안내는 [Ollama macOS 공식 문서](https://docs.ollama.com/macos)와 [Ollama Windows 공식 문서](https://docs.ollama.com/windows)를 참고합니다.
 
 ### 3. 프로젝트용 Ollama 모델 다운로드
 
@@ -395,23 +446,68 @@ streamlit run web_app.py
 
 ### 7. 평가(Evaluation) 실행
 
-LangSmith, RAGAS, DeepEval, Promptfoo를 이용한 평가 방법은 [`evaluation/README.md`](evaluation/README.md)에 별도로 정리되어 있습니다. RAGAS/DeepEval은 메인 실행 환경과 의존성 충돌을 피하기 위해 별도 평가 환경(`evaluation/requirements.txt`)에 설치합니다.
+평가 전용 코퍼스와 실행 방법은 [`evaluation/README.md`](evaluation/README.md)에 정리되어 있습니다. 평가 코드는 운영용 `data/`와 분리된 `evaluation/corpus_v3/`를 사용합니다.
 
-#### 평가 결과
+#### 평가 구성
 
-| 프레임워크 | 지표 | 결과 | 상태 |
-| --- | --- | --- | --- |
-| RAGAS | Faithfulness | 0.7692 | 샘플 1건 실행 완료 |
-| RAGAS | Answer Relevancy | 0.7963 | 샘플 1건 실행 완료 |
-| RAGAS | ID 기반 Context Precision | 0.0 | 진행 중 (원인 확인 필요) |
-| RAGAS | ID 기반 Context Recall | 0.0 | 진행 중 (원인 확인 필요) |
-| DeepEval | Answer Relevancy | 1.00 | 샘플 1건 실행 완료 |
-| DeepEval | Faithfulness | 0.90 | 샘플 1건 실행 완료 |
-| DeepEval | Tool Correctness (`deep_research`/`pipeline`) | - | 진행 중 |
-| Promptfoo | 회귀 테스트 | - | 진행 중 |
-| LangSmith | 라우팅·전체 파이프라인 평가 | - | 진행 중 |
+후보 문항은 총 650건이며, 실제 실행 예산은 400건으로 고정했습니다.
 
-> 위 RAGAS/DeepEval 수치는 실제 RAG 케이스 1건(`rag-1906.04972v1-method`)을 격리된 평가 환경에서 라이브로 실행해 얻은 결과입니다. 전체 평가셋(46건) 기준 결과와 나머지 항목은 아직 산출되지 않아 비워 두었습니다.
+| 평가 Suite | 후보 문항 | 실제 실행 |
+| --- | ---: | ---: |
+| Artifacts | 40 | 40 |
+| Retrieval | 400 | 240 |
+| Deep Research | 80 | 40 |
+| Pipeline | 80 | 40 |
+| Refusal | 50 | 40 |
+| 합계 | 650 | 400 |
+
+모든 논문이 평가 표본에 균형 있게 포함되도록 실행 케이스를 구성했습니다.
+
+#### 400건 평가 결과
+
+| 평가 항목 | 결과 | 해석 |
+| --- | ---: | --- |
+| 실행 건수 | 400건 | 고정 평가 예산 |
+| 오류 건수 | 0건 | 평가 실행 오류 없음 |
+| 논문 추출 제목 정확도 | 1.0000 | 추출 제목 보존 |
+| 추출 내용 완전성 | 1.0000 | 본문 필수 내용 보존 |
+| 논문 단위 검색 Recall@K | 1.0000 | 정답 논문 ID가 고정된 조건 |
+| 논문 단위 MRR | 1.0000 | 정답 논문 순위 |
+| Passage Section Recall@5 | 0.4042 | 본문 구간 검색 성능 |
+| Passage Section MRR | 0.3979 | 정답 본문 구간의 순위 |
+| 인용 정밀도 | 0.0000 | 명시적 출처 표기 부족 |
+| 거절 정확도 | 0.7000 | 범위 밖 질문의 안전한 거절 |
+| 필수 용어 재현율 | 0.5000 | Deep Research 핵심 용어 보존 |
+| LangGraph 경로 정확도 | 1.0000 | 예상 경로와 실제 경로 일치 |
+| Deep Research 완료율 | 1.0000 | 작업 완료 여부 |
+| Pipeline 완료율 | 1.0000 | 전체 파이프라인 완료 여부 |
+
+> 논문 단위 Recall@K와 MRR 1.0은 평가 입력에 정답 논문 ID가 고정된 구조의 영향을 받습니다. 실제 검색 품질은 Passage Section Recall@5와 Passage Section MRR을 중심으로 해석해야 합니다.
+
+> 인용 정밀도 0.0은 검색 자체가 실패했다는 뜻이 아니라, 답변에 `[S1]`과 같은 명시적 출처 표기가 충분하지 않았다는 의미입니다.
+
+> Deep Research 완료율과 Pipeline 완료율은 실행 완료 여부를 나타내며 답변의 의미적 정확성을 보장하지 않습니다.
+
+#### 평가 실행 명령
+
+평가 코퍼스 생성:
+
+```bash
+python evaluation/corpus_v3/build_corpus.py
+```
+
+400건 평가 실행:
+
+```bash
+python -m evaluation.run_v3_evaluation \
+  --suite all \
+  --answer-mode openai \
+  --budget 400
+```
+
+평가 결과는 `evaluation/corpus_v3/generated/evaluation_summary_v3.json`과 `execution_results_v3.jsonl`에 저장됩니다.
+
+RAGAS·DeepEval·LLM-as-a-Judge는 별도 API 토큰이 필요합니다. LangSmith 실험은 캐시 결과 기반으로 등록할 수 있으며, API 키와 실행 결과 원본 JSONL은 GitHub에 커밋하지 않습니다.
 
 ---
 
@@ -525,11 +621,18 @@ LangSmith, RAGAS, DeepEval, Promptfoo를 이용한 평가 방법은 [`evaluation
 
 ## 알려진 제약 사항 (Known Limitations)
 
-- RAGAS의 ID 기반 Context Precision/Recall 지표가 0으로 산출되는 케이스가 확인됐으며, 원인은 아직 파악 중입니다.
+- 논문 단위 Recall@K와 MRR은 정답 논문 ID가 고정된 평가 구조의 영향을 받습니다.
+- 400건 평가에서 Passage Section Recall@5는 `0.4042`, Passage Section MRR은 `0.3979`로 측정되어 본문 구간 검색 품질 개선이 필요합니다.
+- 답변의 명시적 출처 표기가 부족하여 인용 정밀도가 `0.0000`으로 측정되었습니다.
+- Deep Research 필수 용어 재현율은 `0.5000`으로, 핵심 용어와 근거를 더 안정적으로 보존할 필요가 있습니다.
+- RAGAS Faithfulness, Answer Relevancy 및 LLM-as-a-Judge 평가는 API 토큰이 설정된 환경에서 별도로 실행해야 합니다.
+- BM25·Hybrid Search·Reranker와의 비교 평가는 아직 수행하지 않았습니다.
+- 응답 시간, P95 지연시간, 비용 및 메모리 사용량 비교는 후속 평가 대상입니다.
 - FastAPI 백엔드는 아직 구축되지 않아 CLI(`main.py`)와 Streamlit(`web_app.py`)으로만 사용할 수 있습니다.
 - 수식·표가 밀집된 PDF 구간에서는 번역이 실패할 수 있습니다. 이 경우 해당 논문만 건너뛰고 나머지 파이프라인은 계속 진행됩니다.
 - 자연어로 "1번 논문"처럼 번호를 지정해 특정 논문을 선택하는 기능은 제한적으로만 동작합니다.
-- 평가(RAGAS/DeepEval) 결과는 현재 샘플 케이스 기준으로만 검증됐고, 전체 평가셋(46건) 기준 결과는 아직 없습니다.
+- 평가 후보 문항은 650건이며, 실제 실행 예산 400건을 기준으로 결과를 산출했습니다.
+- 원본 PDF와 평가 실행 결과 JSONL은 용량 때문에 GitHub에 포함하지 않습니다.
 - 로컬 Ollama(`qwen2.5:3b`) 기반 검색 키워드 생성은 요청 문장에 번역·요약 등 다른 지시가 섞여 있으면 관련 없는 키워드를 만들어낼 수 있습니다.
 
 ---
@@ -571,10 +674,10 @@ LangSmith, RAGAS, DeepEval, Promptfoo를 이용한 평가 방법은 [`evaluation
 ### 김성환 (RAG 질의응답)
 
 - RAG가 답을 찾았을 때 그 문서를 Deep Research로 넘겨 심층 분석까지 자연스럽게 이어지도록 만드는 부분이 가장 신경 쓰였다. 근거 문서가 없을 때 무한정 재시도하지 않도록 재시도 횟수와 종료 조건을 명확히 설계해야 했다.
-- 출처(source)를 답변과 함께 정확히 반환하는 것도 중요했지만, RAGAS·DeepEval로 실제 점수를 내보니 Context Precision/Recall처럼 ID 매칭이 필요한 지표에서 값이 0으로 나오는 경우가 있어 왜 그런지 더 들여다봐야 한다는 걸 알게 됐다.
+- 출처(source)를 답변과 함께 정확히 반환하는 것이 중요하다는 점을 확인했다. 400건 평가에서 논문 단위 검색 지표와 본문 구간 검색 지표를 분리해 보니, 논문 단위 지표만으로는 실제 검색 품질을 충분히 설명할 수 없었다. 또한 인용 정밀도가 0.0으로 측정되어 답변에 명시적인 출처 표기를 강화해야 한다는 개선 과제를 확인했다.
 
 ### 팀 전체
 
 - 검색→다운로드→추출→번역→요약→RAG→Deep Research로 이어지는 파이프라인을 각자 맡은 구간별로 개발했는데, 정작 전체를 이어 붙였을 때 한 구간의 출력 형식이 다음 구간이 기대하는 입력과 미묘하게 다른 경우가 여러 번 나왔다. 인터페이스(입출력 스키마)를 더 일찍, 더 명확하게 합의했으면 통합 단계가 훨씬 수월했을 것이다.
 - 로컬 모델(Ollama)만으로는 속도·품질 한계가 뚜렷해서 NVIDIA Build API를 일부 단계에 도입했는데, 이 결정 하나로 번역 속도가 크게 개선됐다. 비용과 성능을 함께 고려한 모델 선택이 프로젝트 전체 품질에 미치는 영향이 크다는 걸 배웠다.
-- LangSmith 외에 RAGAS·DeepEval·Promptfoo까지 평가 프레임워크를 확장하면서, "그럴듯해 보이는 답변"과 "실제로 근거에 충실한 답변"은 다르다는 걸 수치로 확인할 수 있었다. 다음 프로젝트에서는 평가 체계를 개발 초반부터 같이 구축하고 싶다.
+- LangSmith 기반 400건 평가와 RAGAS·DeepEval·Promptfoo 실행 어댑터를 함께 구성하면서, "그럴듯해 보이는 답변"과 "실제로 근거에 충실한 답변"은 다르다는 점을 확인했다. 다음 프로젝트에서는 평가 체계를 개발 초반부터 함께 구축하고 싶다.
